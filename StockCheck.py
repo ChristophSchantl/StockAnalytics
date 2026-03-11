@@ -8,12 +8,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import time
 import requests
 from datetime import datetime, timedelta
-from functools import lru_cache
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -198,77 +194,69 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# DATA LAYER  — yfinance with caching & security headers
+# DATA LAYER  — yfinance ≥0.2.38 uses curl_cffi internally.
+# NEVER pass a custom requests.Session — it breaks the auth flow.
+# Security hardening is done via the search endpoint only (requests).
 # ═══════════════════════════════════════════════════════════════
 
-# Randomised user-agent pool → avoids fingerprinting
-_UA_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
-]
-
-def _make_session() -> requests.Session:
-    """
-    Create a hardened requests.Session that mimics a real browser.
-    yfinance accepts a custom session, so all requests inherit these headers.
-    This significantly reduces the chance of Yahoo returning 429 / 401.
-    """
+def _search_session() -> requests.Session:
+    """Hardened requests.Session used ONLY for the Yahoo search endpoint."""
     import random
+    _UA_POOL = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    ]
     session = requests.Session()
     session.headers.update({
         "User-Agent"      : random.choice(_UA_POOL),
-        "Accept"          : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept"          : "application/json, text/plain, */*",
         "Accept-Language" : "en-US,en;q=0.9",
         "Accept-Encoding" : "gzip, deflate, br",
         "DNT"             : "1",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest"  : "document",
-        "Sec-Fetch-Mode"  : "navigate",
-        "Sec-Fetch-Site"  : "none",
-        "Cache-Control"   : "max-age=0",
     })
-    # Mount a retry adapter: 3 retries with exponential back-off
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
-    retry = Retry(
-        total=3,
-        backoff_factor=1.2,          # 1.2s, 2.4s, 4.8s
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
+    retry = Retry(total=3, backoff_factor=1.2,
+                  status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=["GET"])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
-
-@st.cache_resource(ttl=300)          # 5-min server-side cache
-def _get_session():
-    return _make_session()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker_data(symbol: str) -> dict:
     """
-    Fetch all fundamentals + price history in one call.
+    Fetch all fundamentals + price history.
+    yfinance ≥0.2.38 manages its own curl_cffi session internally — no session arg.
     Returns a normalised dict; never raises — returns {'error': str} on failure.
     """
     try:
-        session = _get_session()
-        tk = yf.Ticker(symbol, session=session)
+        # No session= argument — yfinance handles curl_cffi auth internally
+        tk = yf.Ticker(symbol)
 
-        info = tk.info or {}
-        if not info or info.get("trailingPegRatio") is None and "shortName" not in info:
-            # Fallback: fast_info is lighter and often succeeds when full info throttles
-            fi = tk.fast_info
-            info = {
-                "shortName"          : getattr(fi, "quote_type", symbol),
-                "regularMarketPrice" : getattr(fi, "last_price", None),
-                "marketCap"          : getattr(fi, "market_cap", None),
-                "currency"           : getattr(fi, "currency", "USD"),
-            }
+        info = {}
+        try:
+            info = tk.info or {}
+        except Exception:
+            pass
 
-        # Price history
-        hist = tk.history(period="5y", auto_adjust=True, timeout=15)
+        # fast_info is lighter and works when full info throttles
+        if not info or "shortName" not in info:
+            try:
+                fi = tk.fast_info
+                info = {
+                    "shortName"          : getattr(fi, "quote_type", symbol),
+                    "regularMarketPrice" : getattr(fi, "last_price", None),
+                    "marketCap"          : getattr(fi, "market_cap", None),
+                    "currency"           : getattr(fi, "currency", "USD"),
+                }
+            except Exception:
+                pass
+
+        # Price history — no session arg, yfinance manages curl_cffi itself
+        hist = tk.history(period="5y", auto_adjust=True, actions=False, timeout=20)
         prices = []
         if hist is not None and not hist.empty:
             hist = hist[["Close"]].dropna()
@@ -368,11 +356,11 @@ def _altman_z(info: dict):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def search_tickers(query: str) -> list[dict]:
-    """Live ticker search via Yahoo Finance query endpoint."""
+    """Live ticker search via Yahoo Finance query endpoint (uses requests, not yfinance)."""
     if len(query) < 1:
         return []
     try:
-        session = _get_session()
+        session = _search_session()
         url = (
             f"https://query2.finance.yahoo.com/v1/finance/search"
             f"?q={query}&quotesCount=8&newsCount=0&listsCount=0"
