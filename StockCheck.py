@@ -531,13 +531,13 @@ _PLOTLY_LAYOUT = dict(
     paper_bgcolor=STONE,
     plot_bgcolor=STONE,
     margin=dict(l=0, r=0, t=24, b=0),
-    xaxis=dict(showgrid=False, tickfont_size=10, tickfont_color=INK_LIGHT,
+    xaxis=dict(showgrid=False, tickfont=dict(size=10, color=INK_LIGHT),
                zeroline=False, showline=False),
     yaxis=dict(showgrid=True, gridcolor="#DDD8CE", gridwidth=1,
-               tickfont_size=10, tickfont_color=INK_LIGHT,
+               tickfont=dict(size=10, color=INK_LIGHT),
                zeroline=False, showline=False),
     legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                font_size=11, font_color=INK_MID),
+                font=dict(size=11, color=INK_MID)),
 )
 
 def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go.Figure:
@@ -580,7 +580,6 @@ def income_chart(d: dict) -> go.Figure:
         ("EBITDA",     d.get("ebitda"),       DEPTH),
         ("Net Income", d.get("net_income"),   RISE if (d.get("net_income") or 0) >= 0 else FALL),
     ]
-    # Only include items with a real positive-or-negative number
     items = [(lbl, val, col) for lbl, val, col in candidates
              if val is not None and not np.isnan(float(val))]
 
@@ -606,18 +605,23 @@ def income_chart(d: dict) -> go.Figure:
         hovertemplate="%{x}: " + cur + "%{y:.2f}B<extra></extra>",
     ))
     fig.update_traces(marker_line_width=0, width=0.45)
-    # Auto-range with 20% padding for text labels
-    max_v = max(abs(v) for v in values) * 1.25
+
+    max_v = max(abs(v) for v in values) * 1.3
+
+    # Build layout without xaxis/yaxis (they conflict with _PLOTLY_LAYOUT)
+    base = {k: v for k, v in _PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")}
     fig.update_layout(
-        **_PLOTLY_LAYOUT, height=260, showlegend=False,
+        **base,
+        height=260,
+        showlegend=False,
+        xaxis=dict(showgrid=False, tickfont=dict(size=11, color=INK_MID)),
         yaxis=dict(
-            range=[-max_v * 0.1, max_v],
+            range=[-max_v * 0.05, max_v],
             showgrid=True, gridcolor="#DDD8CE",
-            tickfont_size=10, tickfont_color=INK_LIGHT,
+            tickfont=dict(size=10, color=INK_LIGHT),
             zeroline=True, zerolinecolor="#DDD8CE",
             ticksuffix="B",
         ),
-        xaxis=dict(showgrid=False, tickfont_size=11, tickfont_color=INK_MID),
     )
     return fig
 
@@ -1188,3 +1192,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
