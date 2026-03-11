@@ -225,92 +225,207 @@ def _search_session() -> requests.Session:
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
 
+def _safe(val):
+    """Return float or None; never NaN."""
+    try:
+        v = float(val)
+        return None if (np.isnan(v) or np.isinf(v)) else v
+    except Exception:
+        return None
+
+def _row(df: pd.DataFrame, *keys):
+    """Extract first matching row label from a DataFrame, return most-recent value."""
+    for k in keys:
+        for label in df.index:
+            if k.lower() in str(label).lower():
+                row = df.loc[label]
+                # take the most recent non-null column
+                for col in df.columns:
+                    v = _safe(row[col])
+                    if v is not None:
+                        return v
+    return None
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker_data(symbol: str) -> dict:
     """
-    Fetch all fundamentals + price history.
-    yfinance ≥0.2.38 manages its own curl_cffi session internally — no session arg.
-    Returns a normalised dict; never raises — returns {'error': str} on failure.
+    Multi-endpoint fetch using yfinance ≥0.2.38.
+    Priority order:
+      1. fast_info   → price, market cap, currency, shares, exchange
+      2. info        → name, sector, bio, valuation ratios, beta, margins
+      3. income_stmt → revenue, net income, EBITDA (annual financial statements)
+      4. balance_sheet → D/E, liquidity ratios
+      5. history     → price series + computed risk metrics
+    Never raises — returns {'error': str} on total failure.
     """
     try:
-        # No session= argument — yfinance handles curl_cffi auth internally
         tk = yf.Ticker(symbol)
 
+        # ── 1. fast_info (always available, very reliable) ──────
+        fi = tk.fast_info
+        fi_price    = _safe(getattr(fi, "last_price",   None))
+        fi_prev     = _safe(getattr(fi, "previous_close", None))
+        fi_mktcap   = _safe(getattr(fi, "market_cap",   None))
+        fi_currency = getattr(fi, "currency", "USD") or "USD"
+        fi_shares   = _safe(getattr(fi, "shares",       None))
+        fi_exchange = getattr(fi, "exchange",  "") or ""
+        fi_type     = getattr(fi, "quote_type","") or ""
+
+        # ── 2. info (may be partial in newer yfinance) ───────────
         info = {}
         try:
             info = tk.info or {}
+            # yfinance sometimes returns a minimal stub — detect and discard
+            if list(info.keys()) == ["maxAge"] or len(info) < 5:
+                info = {}
+        except Exception:
+            info = {}
+
+        name     = (info.get("longName") or info.get("shortName") or "").strip()
+        # Fallback: derive a readable name from symbol if info is empty
+        if not name or name.upper() in ("EQUITY", "ETF", "INDEX", "MUTUALFUND", symbol.upper()):
+            name = symbol.upper()
+
+        currency   = info.get("currency") or fi_currency
+        sector     = info.get("sector")   or "—"
+        industry   = info.get("industry") or "—"
+        country    = info.get("country")  or "—"
+        exchange   = info.get("exchange") or fi_exchange or "—"
+        bio        = info.get("longBusinessSummary") or ""
+        employees  = info.get("fullTimeEmployees")
+
+        price      = _safe(info.get("regularMarketPrice")) or fi_price or fi_prev
+        mkt_cap    = _safe(info.get("marketCap")) or fi_mktcap
+        shares     = _safe(info.get("sharesOutstanding")) or fi_shares
+
+        # Valuation ratios from info
+        pe         = _safe(info.get("trailingPE"))
+        ps         = _safe(info.get("priceToSalesTrailing12Months"))
+        pb         = _safe(info.get("priceToBook"))
+        ev         = _safe(info.get("enterpriseValue"))
+        ev_rev     = _safe(info.get("enterpriseToRevenue"))
+        ev_ebitda  = _safe(info.get("enterpriseToEbitda"))
+        beta       = _safe(info.get("beta"))
+        profit_mg  = _safe(info.get("profitMargins"))
+        roa        = _safe(info.get("returnOnAssets"))
+        roe        = _safe(info.get("returnOnEquity"))
+        div_yield  = _safe(info.get("dividendYield")) or 0.0
+        payout     = _safe(info.get("payoutRatio"))   or 0.0
+        debt_eq    = _safe(info.get("debtToEquity"))  # Yahoo returns ×100
+        if debt_eq: debt_eq /= 100
+        cur_ratio  = _safe(info.get("currentRatio"))
+        quick_r    = _safe(info.get("quickRatio"))
+
+        # ── 3. Income statement (annual) ─────────────────────────
+        revenue = net_income = ebitda_val = None
+        try:
+            inc = tk.income_stmt          # columns = most-recent quarters/years
+            if inc is not None and not inc.empty:
+                revenue     = _row(inc, "Total Revenue")
+                net_income  = _row(inc, "Net Income")
+                ebitda_val  = _row(inc, "EBITDA", "Normalized EBITDA")
+                # derive EBITDA from EBIT + D&A if not direct
+                if ebitda_val is None:
+                    ebit = _row(inc, "EBIT", "Operating Income")
+                    da   = _row(inc, "Depreciation", "Reconciled Depreciation")
+                    if ebit and da:
+                        ebitda_val = ebit + da
+                # fallback P&L items for margins
+                if profit_mg is None and revenue and net_income and revenue != 0:
+                    profit_mg = net_income / revenue
         except Exception:
             pass
 
-        # fast_info is lighter and works when full info throttles
-        if not info or "shortName" not in info:
-            try:
-                fi = tk.fast_info
-                info = {
-                    "shortName"          : getattr(fi, "quote_type", symbol),
-                    "regularMarketPrice" : getattr(fi, "last_price", None),
-                    "marketCap"          : getattr(fi, "market_cap", None),
-                    "currency"           : getattr(fi, "currency", "USD"),
-                }
-            except Exception:
-                pass
+        # Fallback revenue/income from info
+        if revenue is None:
+            revenue    = _safe(info.get("totalRevenue"))
+        if net_income is None:
+            net_income = _safe(info.get("netIncomeToCommon"))
+        if ebitda_val is None:
+            ebitda_val = _safe(info.get("ebitda"))
 
-        # Price history — no session arg, yfinance manages curl_cffi itself
-        hist = tk.history(period="5y", auto_adjust=True, actions=False, timeout=20)
+        # ── 4. Balance sheet ─────────────────────────────────────
+        total_assets = total_liab = retained = cur_assets = cur_liab = total_debt = None
+        try:
+            bs = tk.balance_sheet
+            if bs is not None and not bs.empty:
+                total_assets  = _row(bs, "Total Assets")
+                total_liab    = _row(bs, "Total Liab", "Total Liabilities")
+                retained      = _row(bs, "Retained Earnings")
+                cur_assets    = _row(bs, "Current Assets", "Total Current Assets")
+                cur_liab      = _row(bs, "Current Liabilities", "Total Current Liabilities")
+                total_debt    = _row(bs, "Total Debt", "Long Term Debt")
+                equity        = _row(bs, "Total Stockholder", "Stockholders Equity", "Total Equity")
+                # Recompute D/E from balance sheet if info didn't have it
+                if debt_eq is None and total_debt and equity and equity != 0:
+                    debt_eq = total_debt / equity
+                if cur_ratio is None and cur_assets and cur_liab and cur_liab != 0:
+                    cur_ratio = cur_assets / cur_liab
+                if quick_r is None and cur_assets and cur_liab and cur_liab != 0:
+                    inv = _row(bs, "Inventory") or 0
+                    quick_r = (cur_assets - inv) / cur_liab
+        except Exception:
+            pass
+
+        # Altman Z-Score
+        zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
+                               revenue, cur_assets, cur_liab, total_liab)
+
+        # ── 5. Price history + risk ───────────────────────────────
         prices = []
-        if hist is not None and not hist.empty:
-            hist = hist[["Close"]].dropna()
-            hist.index = pd.to_datetime(hist.index).tz_localize(None)
-            prices = [
-                {"date": idx.strftime("%Y-%m-%d"), "price": round(float(row["Close"]), 2)}
-                for idx, row in hist.iterrows()
-            ]
+        hist_close = np.array([])
+        try:
+            hist = tk.history(period="5y", auto_adjust=True, actions=False, timeout=20)
+            if hist is not None and not hist.empty:
+                hist = hist[["Close"]].dropna()
+                hist.index = pd.to_datetime(hist.index).tz_localize(None)
+                hist_close = hist["Close"].values.astype(float)
+                prices = [
+                    {"date": idx.strftime("%Y-%m-%d"), "price": round(float(v), 2)}
+                    for idx, v in zip(hist.index, hist_close)
+                ]
+                # Use last close as price if fast_info gave nothing
+                if price is None and len(hist_close) > 0:
+                    price = float(hist_close[-1])
+        except Exception:
+            pass
 
-        # Risk metrics from price history
-        risk = _compute_risk(hist["Close"].values if prices else np.array([]))
+        risk = _compute_risk(hist_close)
 
         return {
-            "symbol"  : symbol,
-            "name"    : info.get("longName") or info.get("shortName") or symbol,
-            "sector"  : info.get("sector", "—"),
-            "industry": info.get("industry", "—"),
-            "country" : info.get("country", "—"),
-            "exchange": info.get("exchange", "—"),
-            "currency": info.get("currency", "USD"),
-            "employees": info.get("fullTimeEmployees"),
-            "bio"     : info.get("longBusinessSummary", ""),
-            "website" : info.get("website", ""),
-            # Price
-            "price"   : info.get("regularMarketPrice") or info.get("previousClose"),
-            "mkt_cap" : info.get("marketCap"),
-            "shares"  : info.get("sharesOutstanding"),
-            # Valuation
-            "pe"      : info.get("trailingPE"),
-            "ps"      : info.get("priceToSalesTrailing12Months"),
-            "pb"      : info.get("priceToBook"),
-            "ev"      : info.get("enterpriseValue"),
-            "ev_rev"  : info.get("enterpriseToRevenue"),
-            "ev_ebitda": info.get("enterpriseToEbitda"),
-            # Profitability
-            "profit_margin": info.get("profitMargins"),
-            "roa"     : info.get("returnOnAssets"),
-            "roe"     : info.get("returnOnEquity"),
-            "revenue" : info.get("totalRevenue"),
-            "net_income": info.get("netIncomeToCommon"),
-            "ebitda"  : info.get("ebitda"),
-            # Dividends
-            "div_yield": info.get("dividendYield", 0) or 0,
-            "payout"  : info.get("payoutRatio", 0) or 0,
-            # Risk / balance sheet
-            "beta"    : info.get("beta"),
-            "debt_eq" : info.get("debtToEquity"),  # Yahoo gives ×100 here
-            "current_ratio": info.get("currentRatio"),
-            "quick_ratio"  : info.get("quickRatio"),
-            "zscore"  : _altman_z(info),
-            # Computed risk
+            "symbol"   : symbol,
+            "name"     : name,
+            "sector"   : sector,
+            "industry" : industry,
+            "country"  : country,
+            "exchange" : exchange,
+            "currency" : currency,
+            "employees": employees,
+            "bio"      : bio,
+            "price"    : price,
+            "mkt_cap"  : mkt_cap,
+            "shares"   : shares,
+            "pe"       : pe,
+            "ps"       : ps,
+            "pb"       : pb,
+            "ev"       : ev,
+            "ev_rev"   : ev_rev,
+            "ev_ebitda": ev_ebitda,
+            "profit_margin": profit_mg,
+            "roa"      : roa,
+            "roe"      : roe,
+            "revenue"  : revenue,
+            "net_income": net_income,
+            "ebitda"   : ebitda_val,
+            "div_yield": div_yield,
+            "payout"   : payout,
+            "beta"     : beta,
+            "debt_eq"  : debt_eq,
+            "current_ratio": cur_ratio,
+            "quick_ratio"  : quick_r,
+            "zscore"   : zscore,
             **risk,
-            # Raw history list
-            "prices"  : prices,
+            "prices"   : prices,
         }
     except Exception as e:
         return {"symbol": symbol, "error": str(e), "prices": []}
@@ -330,26 +445,20 @@ def _compute_risk(closes: np.ndarray) -> dict:
     mdd  = float(np.min((closes - peak) / peak))
     return {"vol": float(ann_vol), "mdd": mdd, "sharpe": float(sharpe) if sharpe else None}
 
-def _altman_z(info: dict):
-    """Simplified Altman Z-Score from yfinance info fields."""
+def _altman_z_v2(ta, retained, ebitda_val, mkt_cap, revenue, cur_assets, cur_liab, total_liab):
+    """Altman Z-Score from explicit balance sheet / income statement values."""
     try:
-        ta   = info.get("totalAssets")
-        re   = info.get("retainedEarningsquity") or info.get("retainedEarnings")
-        ebit = (info.get("ebitda") or 0) * 0.85
-        mc   = info.get("marketCap")
-        rev  = info.get("totalRevenue")
-        ca   = info.get("totalCurrentAssets")
-        cl   = info.get("totalCurrentLiabilities")
-        tl   = info.get("totalDebt") or 0
-        if not ta or ta <= 0 or not mc or not rev:
+        if not ta or ta <= 0 or not mkt_cap or not revenue:
             return None
-        wc = (ca or 0) - (cl or 0)
-        A  = wc / ta
-        B  = (re or 0) / ta
-        C  = ebit / ta
-        D  = mc / max(tl, 1)
-        E  = rev / ta
-        z  = 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
+        wc   = (cur_assets or 0) - (cur_liab or 0)
+        ebit = (ebitda_val or 0) * 0.85
+        tl   = total_liab or 1
+        A = wc / ta
+        B = (retained or 0) / ta
+        C = ebit / ta
+        D = mkt_cap / tl
+        E = revenue / ta
+        z = 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
         return round(z, 2) if 0 < z < 50 else None
     except Exception:
         return None
@@ -466,29 +575,50 @@ def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go
 
 def income_chart(d: dict) -> go.Figure:
     cur = cur_sym(d.get("currency", "USD"))
-    items = [
-        ("Revenue",     d.get("revenue"),    GOLD),
-        ("EBITDA",      d.get("ebitda"),      DEPTH),
-        ("Net Income",  d.get("net_income"),  RISE if (d.get("net_income") or 0) > 0 else FALL),
+    candidates = [
+        ("Revenue",    d.get("revenue"),     GOLD),
+        ("EBITDA",     d.get("ebitda"),       DEPTH),
+        ("Net Income", d.get("net_income"),   RISE if (d.get("net_income") or 0) >= 0 else FALL),
     ]
-    labels = [i[0] for i in items if i[1]]
-    values = [i[1] / 1e9 for i in items if i[1]]
-    colors = [i[2] for i in items if i[1]]
+    # Only include items with a real positive-or-negative number
+    items = [(lbl, val, col) for lbl, val, col in candidates
+             if val is not None and not np.isnan(float(val))]
 
-    if not labels:
-        return go.Figure()
+    if not items:
+        fig = go.Figure()
+        fig.add_annotation(text="Income data unavailable",
+                           xref="paper", yref="paper", x=0.5, y=0.5,
+                           showarrow=False, font=dict(size=13, color=INK_LIGHT,
+                           family="Outfit, sans-serif"))
+        fig.update_layout(**_PLOTLY_LAYOUT, height=260)
+        return fig
+
+    labels = [i[0] for i in items]
+    values = [i[1] / 1e9 for i in items]
+    colors = [i[2] for i in items]
 
     fig = go.Figure(go.Bar(
         x=labels, y=values,
         marker_color=colors,
         text=[f"{cur}{v:.1f}B" for v in values],
         textposition="outside",
-        textfont=dict(size=11, family="Outfit", color=INK_MID),
+        textfont=dict(size=11, family="Outfit, sans-serif", color=INK_MID),
         hovertemplate="%{x}: " + cur + "%{y:.2f}B<extra></extra>",
     ))
     fig.update_traces(marker_line_width=0, width=0.45)
-    fig.update_layout(**_PLOTLY_LAYOUT, height=260, showlegend=False,
-                      yaxis_title=f"({cur}B)")
+    # Auto-range with 20% padding for text labels
+    max_v = max(abs(v) for v in values) * 1.25
+    fig.update_layout(
+        **_PLOTLY_LAYOUT, height=260, showlegend=False,
+        yaxis=dict(
+            range=[-max_v * 0.1, max_v],
+            showgrid=True, gridcolor="#DDD8CE",
+            tickfont_size=10, tickfont_color=INK_LIGHT,
+            zeroline=True, zerolinecolor="#DDD8CE",
+            ticksuffix="B",
+        ),
+        xaxis=dict(showgrid=False, tickfont_size=11, tickfont_color=INK_MID),
+    )
     return fig
 
 def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
