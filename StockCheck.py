@@ -709,7 +709,177 @@ def income_chart(d: dict) -> go.Figure:
     )
     return fig
 
-def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
+def factor_radar(d: dict, symbol: str) -> go.Figure:
+    """
+    Factor Scorecard Spider Chart — 7 dimensions, each scored 0–100.
+
+    Valuation : low multiples = high score (cheap = good)
+    Quality   : high margins + ROE = high score
+    Growth    : revenue & income scale (relative to cap)
+    Risk      : low vol + low beta + strong Z-score = high score
+    Momentum  : price return over window = high score
+    Dividend  : yield + payout sustainability
+    Liquidity : current ratio + low D/E
+    """
+    def _clamp(v, lo, hi):
+        if v is None: return None
+        return max(lo, min(hi, v))
+
+    def _score_val():
+        """Cheap = high score. Based on P/E, P/S, P/B."""
+        scores = []
+        pe = d.get("pe")
+        if pe and pe > 0:
+            scores.append(_clamp(100 - (pe - 5) * 1.5, 0, 100))
+        ps = d.get("ps")
+        if ps and ps > 0:
+            scores.append(_clamp(100 - (ps - 1) * 8, 0, 100))
+        pb = d.get("pb")
+        if pb and pb > 0:
+            scores.append(_clamp(100 - (pb - 1) * 12, 0, 100))
+        ev_e = d.get("ev_ebitda")
+        if ev_e and ev_e > 0:
+            scores.append(_clamp(100 - (ev_e - 6) * 2.5, 0, 100))
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_quality():
+        """Profitability quality."""
+        scores = []
+        pm = d.get("profit_margin")
+        if pm is not None:
+            scores.append(_clamp(pm * 300, 0, 100))   # 33% margin → 100
+        roe = d.get("roe")
+        if roe is not None:
+            scores.append(_clamp(roe * 250, 0, 100))  # 40% ROE → 100
+        roa = d.get("roa")
+        if roa is not None:
+            scores.append(_clamp(roa * 500, 0, 100))  # 20% ROA → 100
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_growth():
+        """Revenue scale relative to market cap — proxy for capital efficiency."""
+        scores = []
+        ps = d.get("ps")
+        if ps and ps > 0:
+            scores.append(_clamp(100 / ps * 15, 0, 100))  # P/S=1 → high, P/S=10 → low
+        ev_r = d.get("ev_rev")
+        if ev_r and ev_r > 0:
+            scores.append(_clamp(100 / ev_r * 12, 0, 100))
+        ni = d.get("net_income"); mc = d.get("mkt_cap")
+        if ni and mc and mc > 0:
+            earn_yield = ni / mc
+            scores.append(_clamp(earn_yield * 600, 0, 100))
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_risk():
+        """Low risk = high score."""
+        scores = []
+        vol = d.get("vol")
+        if vol is not None:
+            scores.append(_clamp(100 - vol * 200, 0, 100))  # 50% vol → 0
+        beta = d.get("beta")
+        if beta is not None:
+            scores.append(_clamp(100 - abs(beta - 1) * 50, 0, 100))
+        mdd = d.get("mdd")
+        if mdd is not None:
+            scores.append(_clamp(100 + mdd * 120, 0, 100))  # mdd is negative
+        sharpe = d.get("sharpe")
+        if sharpe is not None:
+            scores.append(_clamp(sharpe * 50, 0, 100))
+        z = d.get("zscore")
+        if z is not None:
+            scores.append(_clamp((z - 1.8) / (3 - 1.8) * 100, 0, 100))
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_momentum():
+        """Price momentum over the available history."""
+        prices = d.get("prices", [])
+        if len(prices) < 60:
+            return 50
+        closes = [p["price"] for p in prices]
+        # 1Y momentum
+        ret_1y = (closes[-1] - closes[max(0, len(closes)-252)]) / closes[max(0, len(closes)-252)] * 100
+        # 3M momentum
+        ret_3m = (closes[-1] - closes[max(0, len(closes)-63)]) / closes[max(0, len(closes)-63)] * 100
+        score = _clamp(50 + ret_1y * 0.5, 0, 100) * 0.6 + _clamp(50 + ret_3m * 1.5, 0, 100) * 0.4
+        return round(score)
+
+    def _score_dividend():
+        dy = d.get("div_yield") or 0
+        po = d.get("payout")    or 0
+        if dy == 0:
+            return 30   # no dividend — neutral-low
+        yield_score = _clamp(dy * 1000, 0, 100)       # 10% yield → 100
+        payout_score = _clamp(100 - abs(po - 0.5) * 150, 0, 100)  # 50% payout ideal
+        return round(yield_score * 0.6 + payout_score * 0.4)
+
+    def _score_liquidity():
+        scores = []
+        cr = d.get("current_ratio")
+        if cr is not None:
+            scores.append(_clamp((cr - 0.5) / 2.5 * 100, 0, 100))  # 3.0 → 100
+        deq = d.get("debt_eq")
+        if deq is not None:
+            scores.append(_clamp(100 - deq * 30, 0, 100))  # D/E=3 → 10
+        ic = d.get("ic")
+        if ic is not None:
+            scores.append(_clamp(ic * 4, 0, 100))   # coverage=25 → 100
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    # Build scores
+    factors = {
+        "Valuation" : _score_val(),
+        "Quality"   : _score_quality(),
+        "Growth"    : _score_growth(),
+        "Risk"      : _score_risk(),
+        "Momentum"  : _score_momentum(),
+        "Dividend"  : _score_dividend(),
+        "Liquidity" : _score_liquidity(),
+    }
+
+    labels = list(factors.keys())
+    values = list(factors.values())
+    # Close the polygon
+    labels_closed = labels + [labels[0]]
+    values_closed = values + [values[0]]
+
+    # Gold fill with stone background
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=labels_closed,
+        fill="toself",
+        fillcolor=f"rgba(182,157,95,0.15)",
+        line=dict(color=GOLD, width=2),
+        marker=dict(size=5, color=GOLD),
+        name=symbol,
+        hovertemplate="<b>%{theta}</b><br>Score: %{r:.0f}/100<extra></extra>",
+    ))
+    fig.update_layout(
+        polar=dict(
+            bgcolor=STONE,
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                tickvals=[20, 40, 60, 80, 100],
+                tickfont=dict(size=9, color=INK_LIGHT),
+                gridcolor="#DDD8CE",
+                linecolor="#DDD8CE",
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=12, color=INK, family="Outfit, sans-serif"),
+                gridcolor="#DDD8CE",
+                linecolor="#DDD8CE",
+            ),
+        ),
+        paper_bgcolor=STONE,
+        plot_bgcolor=STONE,
+        margin=dict(l=48, r=48, t=48, b=48),
+        height=360,
+        showlegend=False,
+        font=dict(family="Outfit, sans-serif"),
+    )
+    return fig, factors
     symbols = [d["symbol"] for d in all_data]
     values  = [d.get(metric) for d in all_data]
     colors  = [GOLD if v is not None else "#DDD8CE" for v in values]
@@ -913,31 +1083,63 @@ def render_ticker_detail(symbol: str, years: int):
             config={"displayModeBar": False}
         )
 
-    # ── Risk Gauge ───────────────────────────────────────────────
+    # ── Factor Radar + Risk Gauge ────────────────────────────────
     score, grade, color = risk_score(d)
     mdd  = d.get("mdd")
     zscore_val = d.get("zscore")
 
-    st.markdown(f"""
-    <div class="risk-card" style="margin: 24px 0 8px; background: {WHITE}; border: 1px solid #DDD8CE;
-         border-radius: 14px; padding: 20px 28px; gap: 16px;">
-      <div style="flex:1;">
-        <div style="font-size:9px;color:{INK_LIGHT};letter-spacing:.16em;
-             text-transform:uppercase;font-family:Outfit,sans-serif;">Composite Risk Profile</div>
-        <div style="font-family:'Cormorant Garamond',serif;font-size:26px;
-             font-weight:600;color:{color};margin-top:4px;">{grade} Risk</div>
-      </div>
-      <div style="flex:2;">
-        <div style="height:8px;background:#EDE8DF;border-radius:4px;overflow:hidden;margin-bottom:6px;">
-          <div style="width:{min(score,100)}%;height:100%;
-               background:linear-gradient(90deg,{RISE},{CAUTION},{FALL});border-radius:4px;"></div>
+    radar_fig, factors = factor_radar(d, symbol)
+    col_radar, col_risk = st.columns([1, 1])
+
+    with col_radar:
+        st.markdown('<div class="section-header">Factor Scorecard</div>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
+        st.plotly_chart(radar_fig, use_container_width=True,
+                        config={"displayModeBar": False})
+
+    with col_risk:
+        st.markdown('<div class="section-header">Factor Scores</div>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
+        # Score bars for each factor
+        for fname, fscore in factors.items():
+            bar_color = RISE if fscore >= 65 else (FALL if fscore <= 35 else GOLD)
+            st.markdown(f"""
+            <div style="margin-bottom:14px;">
+              <div style="display:flex;justify-content:space-between;
+                   margin-bottom:5px;">
+                <span style="font-family:Outfit,sans-serif;font-size:11px;
+                      color:{INK_MID};font-weight:500;">{fname}</span>
+                <span style="font-family:'Cormorant Garamond',serif;font-size:16px;
+                      font-weight:600;color:{bar_color};">{fscore}</span>
+              </div>
+              <div style="height:5px;background:#EDE8DF;border-radius:3px;overflow:hidden;">
+                <div style="width:{fscore}%;height:100%;background:{bar_color};
+                     border-radius:3px;transition:width .6s ease;"></div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Composite Risk
+        st.markdown(f"""
+        <div style="margin-top:20px;padding:16px 20px;background:{WHITE};
+             border:1px solid #DDD8CE;border-radius:12px;">
+          <div style="font-size:9px;color:{INK_LIGHT};letter-spacing:.16em;
+               text-transform:uppercase;font-family:Outfit,sans-serif;
+               margin-bottom:6px;">Composite Risk Profile</div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:24px;
+               font-weight:600;color:{color};">{grade} Risk</div>
+          <div style="height:6px;background:#EDE8DF;border-radius:3px;
+               overflow:hidden;margin-top:10px;">
+            <div style="width:{min(score,100)}%;height:100%;
+                 background:linear-gradient(90deg,{RISE},{CAUTION},{FALL});
+                 border-radius:3px;"></div>
+          </div>
+          <div style="font-size:11px;color:{INK_LIGHT};font-family:Outfit,sans-serif;
+               margin-top:6px;">Score: <b style="color:{color};">{score}/100</b></div>
         </div>
-        <div style="font-size:11px;color:{INK_LIGHT};font-family:Outfit,sans-serif;">
-          Score: <b style="color:{color};">{score}/100</b>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
     # ── Detailed Tables ─────────────────────────────────────────
     tabs = st.tabs(["📐 Valuation", "📊 Profitability", "🛡  Risk Metrics"])
