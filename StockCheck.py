@@ -249,183 +249,267 @@ def _row(df: pd.DataFrame, *keys):
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker_data(symbol: str) -> dict:
     """
-    Multi-endpoint fetch using yfinance ≥0.2.38.
-    Priority order:
-      1. fast_info   → price, market cap, currency, shares, exchange
-      2. info        → name, sector, bio, valuation ratios, beta, margins
-      3. income_stmt → revenue, net income, EBITDA (annual financial statements)
-      4. balance_sheet → D/E, liquidity ratios
-      5. history     → price series + computed risk metrics
-    Never raises — returns {'error': str} on total failure.
+    Robust multi-endpoint fetch for yfinance ≥0.2.38.
+    tk.info is used ONLY for metadata (name/sector/bio).
+    ALL financial ratios are computed from first principles:
+      fast_info   → price, mkt_cap, currency, shares
+      income_stmt → revenue, net_income, EBITDA, EPS
+      balance_sheet → equity, debt, liquidity
+      history     → price series, beta (vs SPY), volatility, Sharpe, MDD
     """
     try:
         tk = yf.Ticker(symbol)
 
-        # ── 1. fast_info (always available, very reliable) ──────
-        fi = tk.fast_info
-        fi_price    = _safe(getattr(fi, "last_price",   None))
-        fi_prev     = _safe(getattr(fi, "previous_close", None))
-        fi_mktcap   = _safe(getattr(fi, "market_cap",   None))
-        fi_currency = getattr(fi, "currency", "USD") or "USD"
-        fi_shares   = _safe(getattr(fi, "shares",       None))
-        fi_exchange = getattr(fi, "exchange",  "") or ""
-        fi_type     = getattr(fi, "quote_type","") or ""
+        # ── 1. fast_info — price / cap (always reliable) ────────
+        fi          = tk.fast_info
+        fi_price    = _safe(getattr(fi, "last_price",      None))
+        fi_prev     = _safe(getattr(fi, "previous_close",  None))
+        fi_mktcap   = _safe(getattr(fi, "market_cap",      None))
+        fi_currency = (getattr(fi, "currency", None) or "USD")
+        fi_shares   = _safe(getattr(fi, "shares",          None))
+        fi_exchange = (getattr(fi, "exchange",  None) or "")
 
-        # ── 2. info (may be partial in newer yfinance) ───────────
+        # ── 2. info — metadata only (name, sector, bio) ─────────
         info = {}
         try:
             info = tk.info or {}
-            # yfinance sometimes returns a minimal stub — detect and discard
-            if list(info.keys()) == ["maxAge"] or len(info) < 5:
+            if len(info) < 5 or list(info.keys()) == ["maxAge"]:
                 info = {}
         except Exception:
             info = {}
 
-        name     = (info.get("longName") or info.get("shortName") or "").strip()
-        # Fallback: derive a readable name from symbol if info is empty
-        if not name or name.upper() in ("EQUITY", "ETF", "INDEX", "MUTUALFUND", symbol.upper()):
-            name = symbol.upper()
+        # Name: strip generic stubs yfinance returns
+        _BAD_NAMES = {"EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY",
+                      "FUTURE", "OPTION", symbol.upper()}
+        raw_name = (info.get("longName") or info.get("shortName") or "").strip()
+        name = raw_name if raw_name and raw_name.upper() not in _BAD_NAMES else symbol.upper()
 
-        currency   = info.get("currency") or fi_currency
-        sector     = info.get("sector")   or "—"
-        industry   = info.get("industry") or "—"
-        country    = info.get("country")  or "—"
-        exchange   = info.get("exchange") or fi_exchange or "—"
+        # If info returned a stub, try yf.Search for proper company name
+        if name == symbol.upper():
+            try:
+                results = yf.Search(symbol, max_results=1).quotes
+                if results:
+                    q = results[0]
+                    candidate = q.get("longname") or q.get("shortname") or ""
+                    if candidate and candidate.upper() not in _BAD_NAMES:
+                        name = candidate
+            except Exception:
+                pass
+
+        currency   = info.get("currency")  or fi_currency
+        sector     = info.get("sector")    or "—"
+        industry   = info.get("industry")  or "—"
+        country    = info.get("country")   or "—"
+        exchange   = info.get("exchange")  or fi_exchange or "—"
         bio        = info.get("longBusinessSummary") or ""
         employees  = info.get("fullTimeEmployees")
 
-        price      = _safe(info.get("regularMarketPrice")) or fi_price or fi_prev
-        mkt_cap    = _safe(info.get("marketCap")) or fi_mktcap
-        shares     = _safe(info.get("sharesOutstanding")) or fi_shares
+        # Price & cap — fast_info wins over info
+        price   = fi_price or fi_prev or _safe(info.get("regularMarketPrice"))
+        mkt_cap = fi_mktcap or _safe(info.get("marketCap"))
+        shares  = fi_shares or _safe(info.get("sharesOutstanding"))
 
-        # Valuation ratios from info
-        pe         = _safe(info.get("trailingPE"))
-        ps         = _safe(info.get("priceToSalesTrailing12Months"))
-        pb         = _safe(info.get("priceToBook"))
-        ev         = _safe(info.get("enterpriseValue"))
-        ev_rev     = _safe(info.get("enterpriseToRevenue"))
-        ev_ebitda  = _safe(info.get("enterpriseToEbitda"))
-        beta       = _safe(info.get("beta"))
-        profit_mg  = _safe(info.get("profitMargins"))
-        roa        = _safe(info.get("returnOnAssets"))
-        roe        = _safe(info.get("returnOnEquity"))
-        div_yield  = _safe(info.get("dividendYield")) or 0.0
-        payout     = _safe(info.get("payoutRatio"))   or 0.0
-        debt_eq    = _safe(info.get("debtToEquity"))  # Yahoo returns ×100
-        if debt_eq: debt_eq /= 100
-        cur_ratio  = _safe(info.get("currentRatio"))
-        quick_r    = _safe(info.get("quickRatio"))
-
-        # ── 3. Income statement (annual) ─────────────────────────
-        revenue = net_income = ebitda_val = None
+        # ── 3. Income statement ──────────────────────────────────
+        revenue = net_income = ebitda_val = gross_profit = None
+        interest_exp = None
         try:
-            inc = tk.income_stmt          # columns = most-recent quarters/years
+            inc = tk.income_stmt
             if inc is not None and not inc.empty:
-                revenue     = _row(inc, "Total Revenue")
-                net_income  = _row(inc, "Net Income")
-                ebitda_val  = _row(inc, "EBITDA", "Normalized EBITDA")
-                # derive EBITDA from EBIT + D&A if not direct
+                revenue      = _row(inc, "Total Revenue")
+                net_income   = _row(inc, "Net Income")
+                gross_profit = _row(inc, "Gross Profit")
+                ebitda_val   = _row(inc, "EBITDA", "Normalized EBITDA")
+                interest_exp = _row(inc, "Interest Expense")
                 if ebitda_val is None:
                     ebit = _row(inc, "EBIT", "Operating Income")
-                    da   = _row(inc, "Depreciation", "Reconciled Depreciation")
-                    if ebit and da:
-                        ebitda_val = ebit + da
-                # fallback P&L items for margins
-                if profit_mg is None and revenue and net_income and revenue != 0:
-                    profit_mg = net_income / revenue
+                    da   = _row(inc, "Depreciation", "Reconciled Depreciation",
+                                "Depreciation And Amortization")
+                    if ebit is not None and da is not None:
+                        ebitda_val = ebit + abs(da)
         except Exception:
             pass
 
-        # Fallback revenue/income from info
-        if revenue is None:
-            revenue    = _safe(info.get("totalRevenue"))
-        if net_income is None:
-            net_income = _safe(info.get("netIncomeToCommon"))
-        if ebitda_val is None:
-            ebitda_val = _safe(info.get("ebitda"))
-
         # ── 4. Balance sheet ─────────────────────────────────────
-        total_assets = total_liab = retained = cur_assets = cur_liab = total_debt = None
+        total_assets = total_liab = retained = None
+        cur_assets = cur_liab = total_debt = equity = None
         try:
             bs = tk.balance_sheet
             if bs is not None and not bs.empty:
-                total_assets  = _row(bs, "Total Assets")
-                total_liab    = _row(bs, "Total Liab", "Total Liabilities")
-                retained      = _row(bs, "Retained Earnings")
-                cur_assets    = _row(bs, "Current Assets", "Total Current Assets")
-                cur_liab      = _row(bs, "Current Liabilities", "Total Current Liabilities")
-                total_debt    = _row(bs, "Total Debt", "Long Term Debt")
-                equity        = _row(bs, "Total Stockholder", "Stockholders Equity", "Total Equity")
-                # Recompute D/E from balance sheet if info didn't have it
-                if debt_eq is None and total_debt and equity and equity != 0:
-                    debt_eq = total_debt / equity
-                if cur_ratio is None and cur_assets and cur_liab and cur_liab != 0:
-                    cur_ratio = cur_assets / cur_liab
-                if quick_r is None and cur_assets and cur_liab and cur_liab != 0:
-                    inv = _row(bs, "Inventory") or 0
-                    quick_r = (cur_assets - inv) / cur_liab
+                total_assets = _row(bs, "Total Assets")
+                total_liab   = _row(bs, "Total Liab", "Total Liabilities Net Minority Interest")
+                retained     = _row(bs, "Retained Earnings")
+                cur_assets   = _row(bs, "Current Assets", "Total Current Assets")
+                cur_liab     = _row(bs, "Current Liabilities", "Total Current Liabilities")
+                total_debt   = _row(bs, "Total Debt", "Long Term Debt")
+                equity       = _row(bs, "Stockholders Equity", "Total Stockholder Equity",
+                                    "Common Stock Equity", "Total Equity Gross Minority Interest")
         except Exception:
             pass
 
-        # Altman Z-Score
-        zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
-                               revenue, cur_assets, cur_liab, total_liab)
-
-        # ── 5. Price history + risk ───────────────────────────────
+        # ── 5. Price history + beta + risk ───────────────────────
         prices = []
-        hist_close = np.array([])
+        hist_close    = np.array([])
+        hist_dates    = []
+        hist_returns  = np.array([])
+
         try:
             hist = tk.history(period="5y", auto_adjust=True, actions=False, timeout=20)
             if hist is not None and not hist.empty:
                 hist = hist[["Close"]].dropna()
                 hist.index = pd.to_datetime(hist.index).tz_localize(None)
                 hist_close = hist["Close"].values.astype(float)
-                prices = [
-                    {"date": idx.strftime("%Y-%m-%d"), "price": round(float(v), 2)}
-                    for idx, v in zip(hist.index, hist_close)
-                ]
-                # Use last close as price if fast_info gave nothing
+                hist_dates = hist.index
                 if price is None and len(hist_close) > 0:
                     price = float(hist_close[-1])
+                prices = [
+                    {"date": idx.strftime("%Y-%m-%d"), "price": round(float(v), 2)}
+                    for idx, v in zip(hist_dates, hist_close)
+                ]
+                if len(hist_close) > 1:
+                    hist_returns = np.diff(np.log(hist_close[hist_close > 0]))
         except Exception:
             pass
 
-        risk = _compute_risk(hist_close)
+        # Beta: regress stock returns vs SPY over same window
+        beta = _safe(info.get("beta"))
+        if beta is None and len(hist_returns) > 60:
+            try:
+                spy = yf.Ticker("^GSPC").history(period="5y", auto_adjust=True,
+                                                  actions=False, timeout=15)
+                if spy is not None and not spy.empty:
+                    spy = spy[["Close"]].dropna()
+                    spy.index = pd.to_datetime(spy.index).tz_localize(None)
+                    spy_ret = np.diff(np.log(spy["Close"].values.astype(float)))
+                    # Align lengths
+                    n = min(len(hist_returns), len(spy_ret))
+                    if n > 60:
+                        x, y = spy_ret[-n:], hist_returns[-n:]
+                        cov = np.cov(x, y)[0, 1]
+                        var = np.var(x)
+                        if var > 0:
+                            beta = round(cov / var, 2)
+            except Exception:
+                pass
+
+        # ── 6. Compute all ratios from first principles ──────────
+        # P/E  = market_cap / net_income
+        pe = _safe(info.get("trailingPE"))
+        if pe is None and mkt_cap and net_income and net_income > 0:
+            pe = round(mkt_cap / net_income, 2)
+
+        # P/S  = market_cap / revenue
+        ps = _safe(info.get("priceToSalesTrailing12Months"))
+        if ps is None and mkt_cap and revenue and revenue > 0:
+            ps = round(mkt_cap / revenue, 2)
+
+        # P/B  = market_cap / book_equity
+        pb = _safe(info.get("priceToBook"))
+        if pb is None and mkt_cap and equity and equity > 0:
+            pb = round(mkt_cap / equity, 2)
+
+        # EV   = mkt_cap + total_debt - cash (simplified)
+        ev = _safe(info.get("enterpriseValue"))
+        if ev is None and mkt_cap and total_debt:
+            ev = mkt_cap + (total_debt or 0)
+
+        # EV/Revenue, EV/EBITDA
+        ev_rev    = _safe(info.get("enterpriseToRevenue"))
+        ev_ebitda = _safe(info.get("enterpriseToEbitda"))
+        if ev_rev is None and ev and revenue and revenue > 0:
+            ev_rev = round(ev / revenue, 2)
+        if ev_ebitda is None and ev and ebitda_val and ebitda_val > 0:
+            ev_ebitda = round(ev / ebitda_val, 2)
+
+        # Profit margin
+        profit_mg = _safe(info.get("profitMargins"))
+        if profit_mg is None and net_income and revenue and revenue > 0:
+            profit_mg = net_income / revenue
+
+        # ROE  = net_income / equity
+        roe = _safe(info.get("returnOnEquity"))
+        if roe is None and net_income and equity and equity > 0:
+            roe = net_income / equity
+
+        # ROA  = net_income / total_assets
+        roa = _safe(info.get("returnOnAssets"))
+        if roa is None and net_income and total_assets and total_assets > 0:
+            roa = net_income / total_assets
+
+        # D/E  = total_debt / equity
+        debt_eq = _safe(info.get("debtToEquity"))
+        if debt_eq is not None:
+            debt_eq /= 100   # Yahoo returns ×100
+        elif total_debt and equity and equity != 0:
+            debt_eq = total_debt / equity
+
+        # Liquidity ratios
+        cur_ratio = _safe(info.get("currentRatio"))
+        if cur_ratio is None and cur_assets and cur_liab and cur_liab != 0:
+            cur_ratio = cur_assets / cur_liab
+
+        quick_r = _safe(info.get("quickRatio"))
+        if quick_r is None and cur_assets and cur_liab and cur_liab != 0:
+            inv = 0  # conservative — no inventory row needed
+            quick_r = (cur_assets - inv) / cur_liab
+
+        # Interest coverage
+        ic = None
+        if ebitda_val and interest_exp and abs(interest_exp) > 0:
+            ic = ebitda_val / abs(interest_exp)
+
+        # Dividends
+        div_yield = _safe(info.get("dividendYield")) or 0.0
+        payout    = _safe(info.get("payoutRatio"))   or 0.0
+        if div_yield == 0.0:
+            try:
+                divs = tk.dividends
+                if divs is not None and not divs.empty and price:
+                    annual_div = float(divs.tail(4).sum()) if len(divs) >= 4 else float(divs.sum())
+                    div_yield  = annual_div / price
+            except Exception:
+                pass
+
+        # Altman Z-Score & risk
+        zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
+                               revenue, cur_assets, cur_liab, total_liab)
+        risk   = _compute_risk(hist_close)
 
         return {
-            "symbol"   : symbol,
-            "name"     : name,
-            "sector"   : sector,
-            "industry" : industry,
-            "country"  : country,
-            "exchange" : exchange,
-            "currency" : currency,
-            "employees": employees,
-            "bio"      : bio,
-            "price"    : price,
-            "mkt_cap"  : mkt_cap,
-            "shares"   : shares,
-            "pe"       : pe,
-            "ps"       : ps,
-            "pb"       : pb,
-            "ev"       : ev,
-            "ev_rev"   : ev_rev,
-            "ev_ebitda": ev_ebitda,
+            "symbol"       : symbol,
+            "name"         : name,
+            "sector"       : sector,
+            "industry"     : industry,
+            "country"      : country,
+            "exchange"     : exchange,
+            "currency"     : currency,
+            "employees"    : employees,
+            "bio"          : bio,
+            "price"        : price,
+            "mkt_cap"      : mkt_cap,
+            "shares"       : shares,
+            "pe"           : pe,
+            "ps"           : ps,
+            "pb"           : pb,
+            "ev"           : ev,
+            "ev_rev"       : ev_rev,
+            "ev_ebitda"    : ev_ebitda,
             "profit_margin": profit_mg,
-            "roa"      : roa,
-            "roe"      : roe,
-            "revenue"  : revenue,
-            "net_income": net_income,
-            "ebitda"   : ebitda_val,
-            "div_yield": div_yield,
-            "payout"   : payout,
-            "beta"     : beta,
-            "debt_eq"  : debt_eq,
+            "roa"          : roa,
+            "roe"          : roe,
+            "revenue"      : revenue,
+            "net_income"   : net_income,
+            "ebitda"       : ebitda_val,
+            "gross_profit" : gross_profit,
+            "div_yield"    : div_yield,
+            "payout"       : payout,
+            "beta"         : beta,
+            "ic"           : ic,
+            "debt_eq"      : debt_eq,
             "current_ratio": cur_ratio,
             "quick_ratio"  : quick_r,
-            "zscore"   : zscore,
+            "zscore"       : zscore,
             **risk,
-            "prices"   : prices,
+            "prices"       : prices,
         }
     except Exception as e:
         return {"symbol": symbol, "error": str(e), "prices": []}
@@ -901,9 +985,11 @@ def render_ticker_detail(symbol: str, years: int):
         _render_table(rows)
 
     with tabs[2]:
-        mdd_val = d.get("mdd"); deq = d.get("debt_eq")
-        if deq: deq = deq / 100   # Yahoo returns ×100
-        cr = d.get("current_ratio"); qr = d.get("quick_ratio")
+        mdd_val = d.get("mdd")
+        deq = d.get("debt_eq")   # already normalised in fetch (not ×100)
+        cr  = d.get("current_ratio")
+        qr  = d.get("quick_ratio")
+        ic  = d.get("ic")
         rows = [
             {"Metric": "Beta (β)",            "Value": fmt_num(beta),
              "Signal": _sig("warn" if beta and beta>1.5 else "good" if beta and beta<0.8 else None),
@@ -925,6 +1011,9 @@ def render_ticker_detail(symbol: str, years: int):
              "Comment": "Strong liquidity" if cr and cr>2 else "Liquidity concern" if cr and cr<1 else ""},
             {"Metric": "Quick Ratio",          "Value": fmt_num(qr),
              "Signal": _sig("good" if qr and qr>1.2 else "bad" if qr and qr<0.8 else None), "Comment": ""},
+            {"Metric": "Interest Coverage",    "Value": f"{ic:.1f}×" if ic else "—",
+             "Signal": _sig("good" if ic and ic>10 else "bad" if ic and ic<3 else None),
+             "Comment": "Very comfortable" if ic and ic>20 else "Debt strain" if ic and ic<3 else ""},
             {"Metric": "Altman Z-Score",       "Value": fmt_num(zscore_val),
              "Signal": _sig("good" if zscore_val and zscore_val>3 else "bad" if zscore_val and zscore_val<1.8 else "warn"),
              "Comment": "Safe zone" if zscore_val and zscore_val>3 else "Distress zone" if zscore_val and zscore_val<1.8 else "Grey zone"},
@@ -1192,4 +1281,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
