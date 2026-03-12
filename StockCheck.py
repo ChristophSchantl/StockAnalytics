@@ -981,15 +981,14 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
 def range_52w_chart(d: dict) -> go.Figure | None:
     """
     Vertical 52-week range graphic — Maison aesthetic.
-    Thin central stem + fat body (low→current or current→high)
-    + floating price label + zone shading.
+    Smart label placement prevents overlapping when price is near low or high.
     """
     low   = d.get("w52_low")
     high  = d.get("w52_high")
     price = d.get("price")
     cur   = cur_sym(d.get("currency", "USD"))
-    dist_low  = d.get("dist_52w_low")   # fraction above low
-    dist_high = d.get("dist_52w_high")  # fraction below high (negative)
+    dist_low  = d.get("dist_52w_low")
+    dist_high = d.get("dist_52w_high")
 
     if not low or not high or not price or high <= low:
         return None
@@ -997,189 +996,184 @@ def range_52w_chart(d: dict) -> go.Figure | None:
     span  = high - low
     p_pct = (price - low) / span * 100   # 0–100 position within range
 
-    # Colour: green top quarter, red bottom quarter, gold middle
     if p_pct >= 66:
-        price_color  = RISE
-        zone_label   = "Upper Zone"
-        zone_bgcolor = f"rgba(77,124,91,0.06)"
+        price_color = RISE
     elif p_pct <= 33:
-        price_color  = FALL
-        zone_label   = "Lower Zone"
-        zone_bgcolor = f"rgba(148,72,72,0.05)"
+        price_color = FALL
     else:
-        price_color  = GOLD
-        zone_label   = "Mid Zone"
-        zone_bgcolor = f"rgba(182,157,95,0.06)"
+        price_color = GOLD
 
     fig = go.Figure()
+    PAD = span * 0.22
 
-    PAD = span * 0.18   # vertical padding
-
-    # ── Zone background rect ──────────────────────────────────────
+    # ── Zone background ───────────────────────────────────────────
     fig.add_shape(type="rect",
         x0=0.25, x1=0.75,
-        y0=low - PAD * 0.4, y1=high + PAD * 0.4,
-        fillcolor=zone_bgcolor,
-        line=dict(width=0),
-        layer="below",
+        y0=low - PAD * 0.3, y1=high + PAD * 0.3,
+        fillcolor="rgba(182,157,95,0.04)",
+        line=dict(width=0), layer="below",
     )
 
-    # ── Full range stem (thin, gold-pale) ─────────────────────────
+    # ── Full stem ─────────────────────────────────────────────────
     fig.add_shape(type="line",
         x0=0.5, x1=0.5, y0=low, y1=high,
-        line=dict(color=GOLD_PALE, width=2),
-        layer="below",
+        line=dict(color="#DDD8CE", width=2), layer="below",
     )
 
-    # ── Range body: shaded bar low→price ─────────────────────────
-    # Gradient effect via stacked thin bars
+    # ── Gradient body low → price ─────────────────────────────────
     steps = 40
+    r2, g2, b2 = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
     for i in range(steps):
-        y0_s = low  + (price - low) * (i / steps)
-        y1_s = low  + (price - low) * ((i + 1) / steps)
-        alpha = 0.08 + (i / steps) * 0.22
-        r, g, b = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
+        y0_s = low + (price - low) * (i / steps)
+        y1_s = low + (price - low) * ((i + 1) / steps)
+        alpha = 0.06 + (i / steps) * 0.24
         fig.add_shape(type="rect",
-            x0=0.36, x1=0.64,
-            y0=y0_s, y1=y1_s,
-            fillcolor=f"rgba({r},{g},{b},{alpha:.2f})",
-            line=dict(width=0),
-            layer="below",
+            x0=0.38, x1=0.62, y0=y0_s, y1=y1_s,
+            fillcolor=f"rgba({r2},{g2},{b2},{alpha:.2f})",
+            line=dict(width=0), layer="below",
         )
 
-    # ── Tick marks at Low and High ────────────────────────────────
+    # ── Tick lines at Low and High ────────────────────────────────
     for yval in [low, high]:
         fig.add_shape(type="line",
-            x0=0.36, x1=0.64, y0=yval, y1=yval,
-            line=dict(color=INK_LIGHT, width=1.5, dash="solid"),
+            x0=0.38, x1=0.62, y0=yval, y1=yval,
+            line=dict(color=INK_LIGHT, width=1.5),
         )
 
-    # ── Current price thick horizontal bar ───────────────────────
+    # ── Current price bar + dot ───────────────────────────────────
     fig.add_shape(type="line",
-        x0=0.28, x1=0.72, y0=price, y1=price,
+        x0=0.3, x1=0.7, y0=price, y1=price,
         line=dict(color=price_color, width=3),
     )
-
-    # ── Current price dot ────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[price],
-        mode="markers",
-        marker=dict(
-            size=16, color=price_color,
-            line=dict(color=WHITE, width=2.5),
-            symbol="circle",
-        ),
+        x=[0.5], y=[price], mode="markers",
+        marker=dict(size=16, color=price_color,
+                    line=dict(color=WHITE, width=2.5)),
         showlegend=False,
-        hovertemplate=(
-            f"<b>Current</b><br>{cur}{price:,.2f}<br>"
-            f"Position: {p_pct:.1f}% of range<extra></extra>"
-        ),
+        hovertemplate=f"<b>Current</b><br>{cur}{price:,.2f}<br>{p_pct:.0f}% of range<extra></extra>",
     ))
 
-    # ── High marker dot ───────────────────────────────────────────
+    # ── High / Low marker triangles ───────────────────────────────
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[high],
-        mode="markers",
-        marker=dict(size=9, color=RISE,
-                    symbol="triangle-up",
+        x=[0.5], y=[high], mode="markers",
+        marker=dict(size=9, color=RISE, symbol="triangle-up",
                     line=dict(color=WHITE, width=1.5)),
         showlegend=False,
         hovertemplate=f"<b>52w High</b><br>{cur}{high:,.2f}<extra></extra>",
     ))
-
-    # ── Low marker dot ────────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[low],
-        mode="markers",
-        marker=dict(size=9, color=FALL,
-                    symbol="triangle-down",
+        x=[0.5], y=[low], mode="markers",
+        marker=dict(size=9, color=FALL, symbol="triangle-down",
                     line=dict(color=WHITE, width=1.5)),
         showlegend=False,
         hovertemplate=f"<b>52w Low</b><br>{cur}{low:,.2f}<extra></extra>",
     ))
 
-    # ── RIGHT-SIDE labels: High / Current / Low ───────────────────
-    # 52w High
-    fig.add_annotation(
-        x=0.78, y=high, xref="paper" if False else "x", yref="y",
-        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
-              f"52W HIGH</span><br>"
-              f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
-              f"color:{RISE}'>{cur}{high:,.2f}</b>"),
-        showarrow=False,
-        xanchor="left", yanchor="middle",
-        font=dict(family="Outfit, sans-serif", size=11, color=INK_MID),
-    )
-    # Current
-    offset = span * 0.0   # no arrow offset needed
-    fig.add_annotation(
-        x=0.78, y=price, xref="x", yref="y",
-        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
-              f"CURRENT</span><br>"
-              f"<b style='font-size:18px;font-family:Cormorant Garamond,serif;"
-              f"color:{price_color}'>{cur}{price:,.2f}</b>"
-              + (f"<br><span style='font-size:10px;color:{price_color}'>"
-                 f"+{dist_low*100:.1f}% above low</span>" if dist_low else "")),
-        showarrow=False,
-        xanchor="left", yanchor="middle",
-        font=dict(family="Outfit, sans-serif", size=11),
-    )
-    # 52w Low
-    fig.add_annotation(
-        x=0.78, y=low, xref="x", yref="y",
-        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
-              f"52W LOW</span><br>"
-              f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
-              f"color:{FALL}'>{cur}{low:,.2f}</b>"),
-        showarrow=False,
-        xanchor="left", yanchor="middle",
-        font=dict(family="Outfit, sans-serif", size=11, color=INK_MID),
-    )
+    # ── LEFT mini ruler ───────────────────────────────────────────
+    fig.add_shape(type="rect", x0=0.12, x1=0.17, y0=price, y1=high,
+        fillcolor="#EDE8DF", line=dict(width=0))
+    fig.add_shape(type="rect", x0=0.12, x1=0.17, y0=low, y1=price,
+        fillcolor=f"rgba({r2},{g2},{b2},0.3)", line=dict(width=0))
 
-    # ── LEFT-SIDE: percentage position bar label ──────────────────
+    # ── LEFT label: % of range ────────────────────────────────────
     fig.add_annotation(
-        x=0.22, y=price, xref="x", yref="y",
+        x=0.09, y=(low + high) / 2, xref="x", yref="y",
         text=(f"<b style='font-size:22px;font-family:Cormorant Garamond,serif;"
               f"color:{price_color}'>{p_pct:.0f}%</b><br>"
-              f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.12em'>"
-              f"OF RANGE</span>"),
-        showarrow=False,
-        xanchor="right", yanchor="middle",
-        font=dict(family="Outfit, sans-serif"),
+              f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>OF RANGE</span>"),
+        showarrow=False, xanchor="center", yanchor="middle",
     )
 
-    # ── Thin percentage ruler on the left ─────────────────────────
-    # draw the empty portion (above current)
-    fig.add_shape(type="rect",
-        x0=0.12, x1=0.17,
-        y0=price, y1=high,
-        fillcolor="#EDE8DF",
-        line=dict(width=0),
-    )
-    # filled portion (below current)
-    r2, g2, b2 = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
-    fig.add_shape(type="rect",
-        x0=0.12, x1=0.17,
-        y0=low, y1=price,
-        fillcolor=f"rgba({r2},{g2},{b2},0.35)",
-        line=dict(width=0),
-    )
+    # ── SMART RIGHT-SIDE LABELS ───────────────────────────────────
+    # Compute normalised positions (0–1) for collision detection
+    norm_high  = 1.0
+    norm_price = p_pct / 100
+    norm_low   = 0.0
+
+    # Minimum visual gap in normalised units before we push labels apart
+    MIN_GAP = 0.18
+
+    # Start with natural y positions, then push apart if too close
+    y_high_n  = norm_high
+    y_price_n = norm_price
+    y_low_n   = norm_low
+
+    if y_high_n - y_price_n < MIN_GAP:
+        # price near high → push price label down
+        y_high_n  = norm_high
+        y_price_n = norm_high - MIN_GAP
+    if y_price_n - y_low_n < MIN_GAP:
+        # price near low → push price label up
+        y_price_n = norm_low + MIN_GAP
+        # re-check high collision after pushing up
+        if y_high_n - y_price_n < MIN_GAP:
+            y_high_n = y_price_n + MIN_GAP
+
+    # Convert back to price space
+    def n2p(n): return low + n * span
+
+    y_high_lbl  = n2p(y_high_n)
+    y_price_lbl = n2p(y_price_n)
+    y_low_lbl   = n2p(y_low_n)
+
+    # Draw connector lines if label moved significantly from actual price
+    CONNECTOR_THRESH = span * 0.04
+    for actual, label_y, color in [
+        (high,  y_high_lbl,  RISE),
+        (price, y_price_lbl, price_color),
+        (low,   y_low_lbl,   FALL),
+    ]:
+        if abs(actual - label_y) > CONNECTOR_THRESH:
+            fig.add_shape(type="line",
+                x0=0.72, x1=0.76, y0=actual, y1=label_y,
+                line=dict(color=color, width=1, dash="dot"),
+            )
+
+    dist_label = f"+{dist_low*100:.1f}% above low" if dist_low else ""
+
+    annotations = [
+        # 52w High
+        dict(x=0.79, y=y_high_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"52W HIGH</span><br>"
+                   f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+                   f"color:{RISE}'>{cur}{high:,.2f}</b>"),
+             xanchor="left", yanchor="middle"),
+        # Current
+        dict(x=0.79, y=y_price_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"CURRENT</span><br>"
+                   f"<b style='font-size:17px;font-family:Cormorant Garamond,serif;"
+                   f"color:{price_color}'>{cur}{price:,.2f}</b>"
+                   + (f"<br><span style='font-size:9px;color:{price_color}'>{dist_label}</span>"
+                      if dist_label else "")),
+             xanchor="left", yanchor="middle"),
+        # 52w Low
+        dict(x=0.79, y=y_low_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"52W LOW</span><br>"
+                   f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+                   f"color:{FALL}'>{cur}{low:,.2f}</b>"),
+             xanchor="left", yanchor="middle"),
+    ]
+    for ann in annotations:
+        fig.add_annotation(
+            x=ann["x"], y=ann["y"], xref="x", yref="y",
+            text=ann["text"], showarrow=False,
+            xanchor=ann["xanchor"], yanchor=ann["yanchor"],
+            font=dict(family="Outfit, sans-serif", size=11),
+        )
 
     fig.update_layout(
         paper_bgcolor=STONE,
         plot_bgcolor=STONE,
         height=340,
         margin=dict(l=10, r=10, t=20, b=20),
-        xaxis=dict(
-            range=[0, 1.55],
-            showgrid=False, showticklabels=False,
-            zeroline=False, showline=False, fixedrange=True,
-        ),
-        yaxis=dict(
-            range=[low - PAD, high + PAD],
-            showgrid=False, showticklabels=False,
-            zeroline=False, showline=False, fixedrange=True,
-        ),
+        xaxis=dict(range=[0, 1.62], showgrid=False, showticklabels=False,
+                   zeroline=False, showline=False, fixedrange=True),
+        yaxis=dict(range=[low - PAD, high + PAD], showgrid=False,
+                   showticklabels=False, zeroline=False, showline=False,
+                   fixedrange=True),
         showlegend=False,
         font=dict(family="Outfit, sans-serif"),
     )
