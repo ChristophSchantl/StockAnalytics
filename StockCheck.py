@@ -459,15 +459,30 @@ def fetch_ticker_data(symbol: str) -> dict:
 
         # Dividends
         div_yield = _safe(info.get("dividendYield")) or 0.0
-        payout    = _safe(info.get("payoutRatio"))   or 0.0
+
+        # Validate info yield — Yahoo sometimes gives raw value needing /100
+        if div_yield and div_yield > 1.0:
+            div_yield = div_yield / 100
+
+        # Fallback: compute from actual dividend history (last 12 months only)
         if div_yield == 0.0:
             try:
                 divs = tk.dividends
-                if divs is not None and not divs.empty and price:
-                    annual_div = float(divs.tail(4).sum()) if len(divs) >= 4 else float(divs.sum())
-                    div_yield  = annual_div / price
+                if divs is not None and not divs.empty and price and price > 0:
+                    divs.index = pd.to_datetime(divs.index).tz_localize(None)
+                    cutoff = datetime.now() - timedelta(days=366)
+                    last_year = divs[divs.index >= cutoff]
+                    if not last_year.empty:
+                        annual_div = float(last_year.sum())
+                        div_yield  = annual_div / price
             except Exception:
                 pass
+
+        # Final sanity cap — yield >25% is almost certainly a data error
+        if div_yield and div_yield > 0.25:
+            div_yield = 0.0
+
+        payout = _safe(info.get("payoutRatio")) or 0.0
 
         # Altman Z-Score & risk
         zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
