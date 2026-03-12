@@ -474,6 +474,20 @@ def fetch_ticker_data(symbol: str) -> dict:
                                revenue, cur_assets, cur_liab, total_liab)
         risk   = _compute_risk(hist_close)
 
+        # ── 6b. 52-week high / low distance ──────────────────────
+        w52_low = w52_high = dist_52w_low = dist_52w_high = None
+        try:
+            if len(hist_close) >= 20:
+                window = hist_close[-252:] if len(hist_close) >= 252 else hist_close
+                w52_low   = float(np.min(window))
+                w52_high  = float(np.max(window))
+                if price and w52_low > 0:
+                    dist_52w_low  = (price - w52_low)  / w52_low   # +X% above low
+                if price and w52_high > 0:
+                    dist_52w_high = (price - w52_high) / w52_high  # −X% below high (negative)
+        except Exception:
+            pass
+
         return {
             "symbol"       : symbol,
             "name"         : name,
@@ -509,6 +523,10 @@ def fetch_ticker_data(symbol: str) -> dict:
             "quick_ratio"  : quick_r,
             "zscore"       : zscore,
             **risk,
+            "w52_low"      : w52_low,
+            "w52_high"     : w52_high,
+            "dist_52w_low" : dist_52w_low,
+            "dist_52w_high": dist_52w_high,
             "prices"       : prices,
         }
     except Exception as e:
@@ -826,6 +844,50 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
             scores.append(_clamp(ic * 4, 0, 100))   # coverage=25 → 100
         return round(sum(scores) / len(scores)) if scores else 50
 
+    def _score_convexity():
+        """
+        Convexity = asymmetry of returns: upside capture vs downside capture.
+        High convexity → stock gains more on up days than it loses on down days.
+        Computed as: mean(positive daily returns) / abs(mean(negative daily returns))
+        ratio > 1 = convex (good), ratio < 1 = concave (bad).
+        Also incorporates Calmar ratio (ann_return / abs(MDD)).
+        """
+        prices = d.get("prices", [])
+        if len(prices) < 60:
+            return 50
+        closes = np.array([p["price"] for p in prices], dtype=float)
+        rets = np.diff(np.log(closes[closes > 0]))
+        if len(rets) < 30:
+            return 50
+
+        up_rets   = rets[rets > 0]
+        down_rets = rets[rets < 0]
+        scores = []
+
+        # Upside/downside capture ratio
+        if len(up_rets) > 5 and len(down_rets) > 5:
+            up_mean   = np.mean(up_rets)
+            down_mean = abs(np.mean(down_rets))
+            if down_mean > 0:
+                conv_ratio = up_mean / down_mean
+                # ratio=1.0 → 50, ratio=1.5 → 80, ratio=2.0 → 100, ratio=0.5 → 0
+                scores.append(_clamp((conv_ratio - 0.5) / 1.5 * 100, 0, 100))
+
+        # Calmar ratio: annualised return / abs(max drawdown)
+        mdd = d.get("mdd")
+        if mdd and abs(mdd) > 0.001:
+            ann_return = np.mean(rets) * 252
+            calmar = ann_return / abs(mdd)
+            # calmar=0 → 40, calmar=0.5 → 65, calmar=1 → 80, calmar=2 → 100
+            scores.append(_clamp(40 + calmar * 40, 0, 100))
+
+        # Positive skew of returns (right tail > left tail)
+        if len(rets) > 20:
+            skew = float(pd.Series(rets).skew())
+            scores.append(_clamp(50 + skew * 20, 0, 100))
+
+        return round(sum(scores) / len(scores)) if scores else 50
+
     # Build scores
     factors = {
         "Valuation" : _score_val(),
@@ -833,6 +895,7 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
         "Growth"    : _score_growth(),
         "Risk"      : _score_risk(),
         "Momentum"  : _score_momentum(),
+        "Convexity" : _score_convexity(),
         "Dividend"  : _score_dividend(),
         "Liquidity" : _score_liquidity(),
     }
@@ -843,13 +906,12 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
     labels_closed = labels + [labels[0]]
     values_closed = values + [values[0]]
 
-    # Gold fill with stone background
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(
         r=values_closed,
         theta=labels_closed,
         fill="toself",
-        fillcolor=f"rgba(182,157,95,0.15)",
+        fillcolor="rgba(182,157,95,0.15)",
         line=dict(color=GOLD, width=2),
         marker=dict(size=5, color=GOLD),
         name=symbol,
@@ -875,12 +937,14 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
         paper_bgcolor=STONE,
         plot_bgcolor=STONE,
         margin=dict(l=48, r=48, t=48, b=48),
-        height=360,
+        height=380,
         showlegend=False,
         font=dict(family="Outfit, sans-serif"),
     )
     return fig, factors
-    symbols = [d["symbol"] for d in all_data]
+
+
+def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
     values  = [d.get(metric) for d in all_data]
     colors  = [GOLD if v is not None else "#DDD8CE" for v in values]
     clean_v = [v if v is not None else 0 for v in values]
@@ -1048,7 +1112,13 @@ def render_ticker_detail(symbol: str, years: int):
     with k4:
         st.metric("Div. Yield", fmt_pct(dy) if dy else "—")
     with k5:
-        st.metric("Payout", fmt_pct(po) if po else "—")
+        d52l_val = d.get("dist_52w_low")
+        st.metric("vs 52w Low",
+                  f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—",
+                  delta=("Near low ⚠" if d52l_val is not None and d52l_val < 0.05 else
+                         "Strong cushion" if d52l_val is not None and d52l_val > 0.3 else None),
+                  delta_color=("inverse" if d52l_val is not None and d52l_val < 0.05 else
+                               "normal" if d52l_val is not None and d52l_val > 0.3 else "off"))
     with k6:
         beta_note = "High β" if beta and beta > 1.5 else ("Defensive" if beta and beta < 0.8 else None)
         st.metric("Beta (β)", f"{beta:.2f}" if beta else "—",
@@ -1058,11 +1128,12 @@ def render_ticker_detail(symbol: str, years: int):
     with k7:
         st.metric("Volatility", fmt_pct(vol), delta_color="off")
     with k8:
-        st.metric("Sharpe", f"{sharpe:.2f}" if sharpe else "—",
-                  delta="Good" if sharpe and sharpe > 1.3 else
-                  ("Poor" if sharpe and sharpe < 0.8 else None),
-                  delta_color="normal" if sharpe and sharpe > 1.3 else
-                  ("inverse" if sharpe and sharpe < 0.8 else "off"))
+        d52h_val = d.get("dist_52w_high")
+        st.metric("vs 52w High",
+                  f"{d52h_val*100:.1f}%" if d52h_val is not None else "—",
+                  delta=("At peak 🔝" if d52h_val is not None and abs(d52h_val) < 0.03 else
+                         f"{abs(d52h_val)*100:.0f}% off high" if d52h_val else None),
+                  delta_color=("normal" if d52h_val is not None and abs(d52h_val) < 0.03 else "off"))
 
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
@@ -1192,33 +1263,93 @@ def render_ticker_detail(symbol: str, years: int):
         cr  = d.get("current_ratio")
         qr  = d.get("quick_ratio")
         ic  = d.get("ic")
+        d52l  = d.get("dist_52w_low")    # % above 52w low  (positive = good)
+        d52h  = d.get("dist_52w_high")   # % below 52w high (negative = bearish)
+        w52l  = d.get("w52_low")
+        w52h  = d.get("w52_high")
+        cur_p = d.get("price")
+
+        # Calmar ratio for convexity context
+        calmar = None
+        prices_list = d.get("prices", [])
+        if len(prices_list) > 60 and mdd_val and abs(mdd_val) > 0.001:
+            import math
+            closes_arr = np.array([p["price"] for p in prices_list], dtype=float)
+            log_rets   = np.diff(np.log(closes_arr[closes_arr > 0]))
+            ann_ret    = float(np.mean(log_rets)) * 252
+            calmar     = round(ann_ret / abs(mdd_val), 2)
+
         rows = [
-            {"Metric": "Beta (β)",            "Value": fmt_num(beta),
+            # ── Price Position ──────────────────────────────────────────
+            {"Metric": "52w Low",
+             "Value" : f"{cur_sym(d.get('currency','USD'))}{w52l:,.2f}" if w52l else "—",
+             "Signal": _sig(None),
+             "Comment": "Lowest price in past 52 weeks"},
+            {"Metric": "Distance to 52w Low",
+             "Value" : f"+{d52l*100:.1f}%" if d52l is not None else "—",
+             "Signal": _sig("good" if d52l and d52l>0.2
+                            else "warn" if d52l and d52l>0.05
+                            else "bad" if d52l is not None else None),
+             "Comment": ("Well above low — cushion present" if d52l and d52l>0.2
+                         else "Near 52w low — watch closely" if d52l and d52l<0.05
+                         else "Moderate distance")},
+            {"Metric": "52w High",
+             "Value" : f"{cur_sym(d.get('currency','USD'))}{w52h:,.2f}" if w52h else "—",
+             "Signal": _sig(None),
+             "Comment": "Highest price in past 52 weeks"},
+            {"Metric": "Distance from 52w High",
+             "Value" : f"{d52h*100:.1f}%" if d52h is not None else "—",
+             "Signal": _sig("good" if d52h and abs(d52h)<0.05
+                            else "warn" if d52h and abs(d52h)<0.2
+                            else None),
+             "Comment": ("Near all-time high — strong momentum" if d52h and abs(d52h)<0.05
+                         else f"{abs(d52h)*100:.0f}% off the high" if d52h else "")},
+            # ── Market Risk ─────────────────────────────────────────────
+            {"Metric": "Beta (β)",
+             "Value" : fmt_num(beta),
              "Signal": _sig("warn" if beta and beta>1.5 else "good" if beta and beta<0.8 else None),
              "Comment": "High sensitivity" if beta and beta>1.5 else "Defensive" if beta and beta<0.8 else "Near-market"},
-            {"Metric": "Annualised Volatility","Value": fmt_pct(vol),
+            {"Metric": "Annualised Volatility",
+             "Value" : fmt_pct(vol),
              "Signal": _sig("bad" if vol and vol>0.35 else "good" if vol and vol<0.2 else None),
              "Comment": "Very high swings" if vol and vol>0.35 else "Low volatility" if vol and vol<0.2 else "Moderate"},
-            {"Metric": "Max Drawdown",         "Value": fmt_pct(mdd_val),
-             "Signal": _sig("bad" if mdd_val and abs(mdd_val)>0.5 else "warn" if mdd_val and abs(mdd_val)>0.3 else "good"),
+            {"Metric": "Max Drawdown",
+             "Value" : fmt_pct(mdd_val),
+             "Signal": _sig("bad" if mdd_val and abs(mdd_val)>0.5
+                            else "warn" if mdd_val and abs(mdd_val)>0.3 else "good"),
              "Comment": "Worst peak-to-trough"},
-            {"Metric": "Sharpe Ratio",         "Value": fmt_num(sharpe),
+            {"Metric": "Sharpe Ratio",
+             "Value" : fmt_num(sharpe),
              "Signal": _sig("good" if sharpe and sharpe>1.3 else "bad" if sharpe and sharpe<0.8 else None),
              "Comment": "Excellent risk-adj." if sharpe and sharpe>1.3 else "Poor compensation" if sharpe and sharpe<0.8 else ""},
-            {"Metric": "Debt / Equity",        "Value": fmt_num(deq),
+            {"Metric": "Calmar Ratio",
+             "Value" : fmt_num(calmar),
+             "Signal": _sig("good" if calmar and calmar>1 else "bad" if calmar and calmar<0.3 else None),
+             "Comment": ("Strong return/drawdown" if calmar and calmar>1
+                         else "Weak return for drawdown risk" if calmar and calmar<0.3 else "")},
+            # ── Balance Sheet Risk ───────────────────────────────────────
+            {"Metric": "Debt / Equity",
+             "Value" : fmt_num(deq),
              "Signal": _sig("bad" if deq and deq>2 else "good" if deq and deq<0.5 else None),
              "Comment": "High leverage" if deq and deq>2 else "Conservative" if deq and deq<0.5 else ""},
-            {"Metric": "Current Ratio",        "Value": fmt_num(cr),
+            {"Metric": "Current Ratio",
+             "Value" : fmt_num(cr),
              "Signal": _sig("good" if cr and cr>1.5 else "bad" if cr and cr<1 else None),
              "Comment": "Strong liquidity" if cr and cr>2 else "Liquidity concern" if cr and cr<1 else ""},
-            {"Metric": "Quick Ratio",          "Value": fmt_num(qr),
-             "Signal": _sig("good" if qr and qr>1.2 else "bad" if qr and qr<0.8 else None), "Comment": ""},
-            {"Metric": "Interest Coverage",    "Value": f"{ic:.1f}×" if ic else "—",
+            {"Metric": "Quick Ratio",
+             "Value" : fmt_num(qr),
+             "Signal": _sig("good" if qr and qr>1.2 else "bad" if qr and qr<0.8 else None),
+             "Comment": ""},
+            {"Metric": "Interest Coverage",
+             "Value" : f"{ic:.1f}×" if ic else "—",
              "Signal": _sig("good" if ic and ic>10 else "bad" if ic and ic<3 else None),
              "Comment": "Very comfortable" if ic and ic>20 else "Debt strain" if ic and ic<3 else ""},
-            {"Metric": "Altman Z-Score",       "Value": fmt_num(zscore_val),
-             "Signal": _sig("good" if zscore_val and zscore_val>3 else "bad" if zscore_val and zscore_val<1.8 else "warn"),
-             "Comment": "Safe zone" if zscore_val and zscore_val>3 else "Distress zone" if zscore_val and zscore_val<1.8 else "Grey zone"},
+            {"Metric": "Altman Z-Score",
+             "Value" : fmt_num(zscore_val),
+             "Signal": _sig("good" if zscore_val and zscore_val>3
+                            else "bad" if zscore_val and zscore_val<1.8 else "warn"),
+             "Comment": ("Safe zone" if zscore_val and zscore_val>3
+                         else "Distress zone" if zscore_val and zscore_val<1.8 else "Grey zone")},
         ]
         _render_table(rows)
 
