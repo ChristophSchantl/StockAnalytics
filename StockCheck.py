@@ -491,15 +491,30 @@ def fetch_ticker_data(symbol: str) -> dict:
 
         # ── 6b. 52-week high / low distance ──────────────────────
         w52_low = w52_high = dist_52w_low = dist_52w_high = None
+        w52_low_date = w52_high_date = None
+        w52_low_days = w52_high_days = None
         try:
             if len(hist_close) >= 20:
-                window = hist_close[-252:] if len(hist_close) >= 252 else hist_close
-                w52_low   = float(np.min(window))
-                w52_high  = float(np.max(window))
+                window_closes = hist_close[-252:] if len(hist_close) >= 252 else hist_close
+                window_dates  = hist_dates[-252:]  if len(hist_dates)  >= 252 else hist_dates
+
+                low_idx  = int(np.argmin(window_closes))
+                high_idx = int(np.argmax(window_closes))
+
+                w52_low  = float(window_closes[low_idx])
+                w52_high = float(window_closes[high_idx])
+
+                w52_low_date  = window_dates[low_idx]
+                w52_high_date = window_dates[high_idx]
+
+                today = pd.Timestamp.now().normalize()
+                w52_low_days  = int((today - pd.Timestamp(w52_low_date)).days)
+                w52_high_days = int((today - pd.Timestamp(w52_high_date)).days)
+
                 if price and w52_low > 0:
-                    dist_52w_low  = (price - w52_low)  / w52_low   # +X% above low
+                    dist_52w_low  = (price - w52_low)  / w52_low
                 if price and w52_high > 0:
-                    dist_52w_high = (price - w52_high) / w52_high  # −X% below high (negative)
+                    dist_52w_high = (price - w52_high) / w52_high
         except Exception:
             pass
 
@@ -538,10 +553,14 @@ def fetch_ticker_data(symbol: str) -> dict:
             "quick_ratio"  : quick_r,
             "zscore"       : zscore,
             **risk,
-            "w52_low"      : w52_low,
-            "w52_high"     : w52_high,
-            "dist_52w_low" : dist_52w_low,
-            "dist_52w_high": dist_52w_high,
+            "w52_low"       : w52_low,
+            "w52_high"      : w52_high,
+            "w52_low_date"  : w52_low_date.strftime("%Y-%m-%d")  if w52_low_date  else None,
+            "w52_high_date" : w52_high_date.strftime("%Y-%m-%d") if w52_high_date else None,
+            "w52_low_days"  : w52_low_days,
+            "w52_high_days" : w52_high_days,
+            "dist_52w_low"  : dist_52w_low,
+            "dist_52w_high" : dist_52w_high,
             "prices"       : prices,
         }
     except Exception as e:
@@ -1500,17 +1519,28 @@ def render_ticker_detail(symbol: str, years: int):
         cr  = d.get("current_ratio")
         qr  = d.get("quick_ratio")
         ic  = d.get("ic")
-        d52l  = d.get("dist_52w_low")    # % above 52w low  (positive = good)
-        d52h  = d.get("dist_52w_high")   # % below 52w high (negative = bearish)
+        d52l  = d.get("dist_52w_low")
+        d52h  = d.get("dist_52w_high")
         w52l  = d.get("w52_low")
         w52h  = d.get("w52_high")
         cur_p = d.get("price")
+        low_date  = d.get("w52_low_date")
+        high_date = d.get("w52_high_date")
+        low_days  = d.get("w52_low_days")
+        high_days = d.get("w52_high_days")
 
-        # Calmar ratio for convexity context
+        def _days_ago(n):
+            if n is None: return ""
+            if n == 0:    return "today"
+            if n == 1:    return "yesterday"
+            if n < 30:    return f"{n}d ago"
+            if n < 365:   return f"{n//30}mo ago"
+            return f"{n//365}y {(n%365)//30}mo ago"
+
+        # Calmar ratio
         calmar = None
         prices_list = d.get("prices", [])
         if len(prices_list) > 60 and mdd_val and abs(mdd_val) > 0.001:
-            import math
             closes_arr = np.array([p["price"] for p in prices_list], dtype=float)
             log_rets   = np.diff(np.log(closes_arr[closes_arr > 0]))
             ann_ret    = float(np.mean(log_rets)) * 252
@@ -1521,25 +1551,29 @@ def render_ticker_detail(symbol: str, years: int):
             {"Metric": "52w Low",
              "Value" : f"{cur_sym(d.get('currency','USD'))}{w52l:,.2f}" if w52l else "—",
              "Signal": _sig(None),
-             "Comment": "Lowest price in past 52 weeks"},
+             "Comment": (f"{low_date}  ·  {_days_ago(low_days)}" if low_date else
+                         "Lowest price in past 52 weeks")},
             {"Metric": "Distance to 52w Low",
              "Value" : f"+{d52l*100:.1f}%" if d52l is not None else "—",
-             "Signal": _sig("good" if d52l and d52l>0.2
-                            else "warn" if d52l and d52l>0.05
-                            else "bad" if d52l is not None else None),
-             "Comment": ("Well above low — cushion present" if d52l and d52l>0.2
-                         else "Near 52w low — watch closely" if d52l and d52l<0.05
-                         else "Moderate distance")},
+             # INVERTED: near low = buying opportunity = GREEN
+             "Signal": _sig("good" if d52l is not None and d52l < 0.10
+                            else "warn" if d52l is not None and d52l < 0.25
+                            else None),
+             "Comment": ("Near 52w low — potential entry" if d52l is not None and d52l < 0.10
+                         else "Moderate distance from low" if d52l is not None and d52l < 0.25
+                         else "Well above 52w low")},
             {"Metric": "52w High",
              "Value" : f"{cur_sym(d.get('currency','USD'))}{w52h:,.2f}" if w52h else "—",
              "Signal": _sig(None),
-             "Comment": "Highest price in past 52 weeks"},
+             "Comment": (f"{high_date}  ·  {_days_ago(high_days)}" if high_date else
+                         "Highest price in past 52 weeks")},
             {"Metric": "Distance from 52w High",
              "Value" : f"{d52h*100:.1f}%" if d52h is not None else "—",
-             "Signal": _sig("good" if d52h and abs(d52h)<0.05
-                            else "warn" if d52h and abs(d52h)<0.2
+             # Near high = momentum/strength = GREEN; far below = WARN
+             "Signal": _sig("good" if d52h is not None and abs(d52h) < 0.05
+                            else "warn" if d52h is not None and abs(d52h) > 0.35
                             else None),
-             "Comment": ("Near all-time high — strong momentum" if d52h and abs(d52h)<0.05
+             "Comment": ("Near 52w high — strong momentum" if d52h is not None and abs(d52h) < 0.05
                          else f"{abs(d52h)*100:.0f}% off the high" if d52h else "")},
             # ── Market Risk ─────────────────────────────────────────────
             {"Metric": "Beta (β)",
