@@ -944,6 +944,214 @@ def factor_radar(d: dict, symbol: str) -> go.Figure:
     return fig, factors
 
 
+def range_52w_chart(d: dict) -> go.Figure | None:
+    """
+    Vertical 52-week range graphic — Maison aesthetic.
+    Thin central stem + fat body (low→current or current→high)
+    + floating price label + zone shading.
+    """
+    low   = d.get("w52_low")
+    high  = d.get("w52_high")
+    price = d.get("price")
+    cur   = cur_sym(d.get("currency", "USD"))
+    dist_low  = d.get("dist_52w_low")   # fraction above low
+    dist_high = d.get("dist_52w_high")  # fraction below high (negative)
+
+    if not low or not high or not price or high <= low:
+        return None
+
+    span  = high - low
+    p_pct = (price - low) / span * 100   # 0–100 position within range
+
+    # Colour: green top quarter, red bottom quarter, gold middle
+    if p_pct >= 66:
+        price_color  = RISE
+        zone_label   = "Upper Zone"
+        zone_bgcolor = f"rgba(77,124,91,0.06)"
+    elif p_pct <= 33:
+        price_color  = FALL
+        zone_label   = "Lower Zone"
+        zone_bgcolor = f"rgba(148,72,72,0.05)"
+    else:
+        price_color  = GOLD
+        zone_label   = "Mid Zone"
+        zone_bgcolor = f"rgba(182,157,95,0.06)"
+
+    fig = go.Figure()
+
+    PAD = span * 0.18   # vertical padding
+
+    # ── Zone background rect ──────────────────────────────────────
+    fig.add_shape(type="rect",
+        x0=0.25, x1=0.75,
+        y0=low - PAD * 0.4, y1=high + PAD * 0.4,
+        fillcolor=zone_bgcolor,
+        line=dict(width=0),
+        layer="below",
+    )
+
+    # ── Full range stem (thin, gold-pale) ─────────────────────────
+    fig.add_shape(type="line",
+        x0=0.5, x1=0.5, y0=low, y1=high,
+        line=dict(color=GOLD_PALE, width=2),
+        layer="below",
+    )
+
+    # ── Range body: shaded bar low→price ─────────────────────────
+    # Gradient effect via stacked thin bars
+    steps = 40
+    for i in range(steps):
+        y0_s = low  + (price - low) * (i / steps)
+        y1_s = low  + (price - low) * ((i + 1) / steps)
+        alpha = 0.08 + (i / steps) * 0.22
+        r, g, b = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
+        fig.add_shape(type="rect",
+            x0=0.36, x1=0.64,
+            y0=y0_s, y1=y1_s,
+            fillcolor=f"rgba({r},{g},{b},{alpha:.2f})",
+            line=dict(width=0),
+            layer="below",
+        )
+
+    # ── Tick marks at Low and High ────────────────────────────────
+    for yval in [low, high]:
+        fig.add_shape(type="line",
+            x0=0.36, x1=0.64, y0=yval, y1=yval,
+            line=dict(color=INK_LIGHT, width=1.5, dash="solid"),
+        )
+
+    # ── Current price thick horizontal bar ───────────────────────
+    fig.add_shape(type="line",
+        x0=0.28, x1=0.72, y0=price, y1=price,
+        line=dict(color=price_color, width=3),
+    )
+
+    # ── Current price dot ────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[0.5], y=[price],
+        mode="markers",
+        marker=dict(
+            size=16, color=price_color,
+            line=dict(color=WHITE, width=2.5),
+            symbol="circle",
+        ),
+        showlegend=False,
+        hovertemplate=(
+            f"<b>Current</b><br>{cur}{price:,.2f}<br>"
+            f"Position: {p_pct:.1f}% of range<extra></extra>"
+        ),
+    ))
+
+    # ── High marker dot ───────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[0.5], y=[high],
+        mode="markers",
+        marker=dict(size=9, color=RISE,
+                    symbol="triangle-up",
+                    line=dict(color=WHITE, width=1.5)),
+        showlegend=False,
+        hovertemplate=f"<b>52w High</b><br>{cur}{high:,.2f}<extra></extra>",
+    ))
+
+    # ── Low marker dot ────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[0.5], y=[low],
+        mode="markers",
+        marker=dict(size=9, color=FALL,
+                    symbol="triangle-down",
+                    line=dict(color=WHITE, width=1.5)),
+        showlegend=False,
+        hovertemplate=f"<b>52w Low</b><br>{cur}{low:,.2f}<extra></extra>",
+    ))
+
+    # ── RIGHT-SIDE labels: High / Current / Low ───────────────────
+    # 52w High
+    fig.add_annotation(
+        x=0.78, y=high, xref="paper" if False else "x", yref="y",
+        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
+              f"52W HIGH</span><br>"
+              f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+              f"color:{RISE}'>{cur}{high:,.2f}</b>"),
+        showarrow=False,
+        xanchor="left", yanchor="middle",
+        font=dict(family="Outfit, sans-serif", size=11, color=INK_MID),
+    )
+    # Current
+    offset = span * 0.0   # no arrow offset needed
+    fig.add_annotation(
+        x=0.78, y=price, xref="x", yref="y",
+        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
+              f"CURRENT</span><br>"
+              f"<b style='font-size:18px;font-family:Cormorant Garamond,serif;"
+              f"color:{price_color}'>{cur}{price:,.2f}</b>"
+              + (f"<br><span style='font-size:10px;color:{price_color}'>"
+                 f"+{dist_low*100:.1f}% above low</span>" if dist_low else "")),
+        showarrow=False,
+        xanchor="left", yanchor="middle",
+        font=dict(family="Outfit, sans-serif", size=11),
+    )
+    # 52w Low
+    fig.add_annotation(
+        x=0.78, y=low, xref="x", yref="y",
+        text=(f"<span style='font-size:10px;color:{INK_LIGHT};letter-spacing:.1em'>"
+              f"52W LOW</span><br>"
+              f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+              f"color:{FALL}'>{cur}{low:,.2f}</b>"),
+        showarrow=False,
+        xanchor="left", yanchor="middle",
+        font=dict(family="Outfit, sans-serif", size=11, color=INK_MID),
+    )
+
+    # ── LEFT-SIDE: percentage position bar label ──────────────────
+    fig.add_annotation(
+        x=0.22, y=price, xref="x", yref="y",
+        text=(f"<b style='font-size:22px;font-family:Cormorant Garamond,serif;"
+              f"color:{price_color}'>{p_pct:.0f}%</b><br>"
+              f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.12em'>"
+              f"OF RANGE</span>"),
+        showarrow=False,
+        xanchor="right", yanchor="middle",
+        font=dict(family="Outfit, sans-serif"),
+    )
+
+    # ── Thin percentage ruler on the left ─────────────────────────
+    # draw the empty portion (above current)
+    fig.add_shape(type="rect",
+        x0=0.12, x1=0.17,
+        y0=price, y1=high,
+        fillcolor="#EDE8DF",
+        line=dict(width=0),
+    )
+    # filled portion (below current)
+    r2, g2, b2 = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
+    fig.add_shape(type="rect",
+        x0=0.12, x1=0.17,
+        y0=low, y1=price,
+        fillcolor=f"rgba({r2},{g2},{b2},0.35)",
+        line=dict(width=0),
+    )
+
+    fig.update_layout(
+        paper_bgcolor=STONE,
+        plot_bgcolor=STONE,
+        height=340,
+        margin=dict(l=10, r=10, t=20, b=20),
+        xaxis=dict(
+            range=[0, 1.55],
+            showgrid=False, showticklabels=False,
+            zeroline=False, showline=False, fixedrange=True,
+        ),
+        yaxis=dict(
+            range=[low - PAD, high + PAD],
+            showgrid=False, showticklabels=False,
+            zeroline=False, showline=False, fixedrange=True,
+        ),
+        showlegend=False,
+        font=dict(family="Outfit, sans-serif"),
+    )
+    return fig
+
+
 def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
     values  = [d.get(metric) for d in all_data]
     colors  = [GOLD if v is not None else "#DDD8CE" for v in values]
@@ -1138,7 +1346,13 @@ def render_ticker_detail(symbol: str, years: int):
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
     # ── Charts ──────────────────────────────────────────────────
-    col_chart, col_income = st.columns([1.2, 0.8])
+    r52_fig = range_52w_chart(d)
+    if r52_fig is not None:
+        col_chart, col_52w, col_income = st.columns([1.1, 0.45, 0.75])
+    else:
+        col_chart, col_income = st.columns([1.2, 0.8])
+        col_52w = None
+
     with col_chart:
         st.markdown(f'<div class="section-header">Price History · {years}Y</div>',
                     unsafe_allow_html=True)
@@ -1146,6 +1360,14 @@ def render_ticker_detail(symbol: str, years: int):
             price_chart(prices, symbol, d.get("currency", "USD"), years),
             use_container_width=True, config={"displayModeBar": False}
         )
+
+    if col_52w is not None:
+        with col_52w:
+            st.markdown('<div class="section-header">52-Week Range</div>',
+                        unsafe_allow_html=True)
+            st.plotly_chart(r52_fig, use_container_width=True,
+                            config={"displayModeBar": False})
+
     with col_income:
         st.markdown('<div class="section-header">Income Statement (TTM)</div>',
                     unsafe_allow_html=True)
