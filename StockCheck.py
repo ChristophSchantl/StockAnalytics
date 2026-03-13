@@ -1699,7 +1699,7 @@ def render_ticker_detail(symbol: str, years: int):
         ]
         _render_table(rows)
 
-    with tabs[2]:
+        with tabs[2]:
         median_rec = None
         avg_tuw_days = None
         if not cycles_df.empty:
@@ -1720,30 +1720,220 @@ def render_ticker_detail(symbol: str, years: int):
                 return f"{n//30}mo ago"
             return f"{n//365}y {(n%365)//30}mo ago"
 
+        mdd_val = d.get("mdd")
+        beta_val = d.get("beta")
+        vol_val = d.get("vol")
+        downside_vol = d.get("downside_vol")
+        ulcer = d.get("ulcer_index")
+        tuw = d.get("pct_time_under_water")
+        avg_rec = d.get("avg_recovery_days")
+        max_rec = d.get("max_recovery_days")
+        rec_success = d.get("recovery_success_ratio")
+        rec_eff = d.get("recovery_efficiency")
+        deq = d.get("debt_eq")
+        cr = d.get("current_ratio")
+        qr = d.get("quick_ratio")
+        ic = d.get("ic")
+        zscore_val = d.get("zscore")
+        sharpe = d.get("sharpe")
+        d52l = d.get("dist_52w_low")
+        d52h = d.get("dist_52w_high")
+
         rows = [
-            {"Metric": "52w Low", "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_low'):,.2f}" if d.get("w52_low") else "—", "Signal": _sig(None), "Comment": f"{d.get('w52_low_date')} · {_days_ago(d.get('w52_low_days'))}" if d.get("w52_low_date") else ""},
-            {"Metric": "Distance to 52w Low", "Value": f"+{d.get('dist_52w_low')*100:.1f}%" if d.get("dist_52w_low") is not None else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "52w High", "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_high'):,.2f}" if d.get("w52_high") else "—", "Signal": _sig(None), "Comment": f"{d.get('w52_high_date')} · {_days_ago(d.get('w52_high_days'))}" if d.get("w52_high_date") else ""},
-            {"Metric": "Distance from 52w High", "Value": f"{d.get('dist_52w_high')*100:.1f}%" if d.get("dist_52w_high") is not None else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Beta (β)", "Value": fmt_num(d.get("beta")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Annualised Volatility", "Value": fmt_pct(d.get("vol")), "Signal": _sig(None), "Comment": "Dispersion only; recovery profile is decisive"},
-            {"Metric": "Downside Volatility", "Value": fmt_pct(d.get("downside_vol")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Max Drawdown", "Value": fmt_pct(d.get("mdd")), "Signal": _sig(None), "Comment": "Worst peak-to-trough loss"},
-            {"Metric": "Ulcer Index", "Value": fmt_num(d.get("ulcer_index")), "Signal": _sig(None), "Comment": "Depth × duration of drawdowns"},
-            {"Metric": "Time Under Water", "Value": fmt_pct(d.get("pct_time_under_water")), "Signal": _sig(None), "Comment": "Share of time below prior highs"},
-            {"Metric": "Avg Recovery Days", "Value": fmt_num(d.get("avg_recovery_days"), 1), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Median Recovery Days", "Value": fmt_num(median_rec, 1), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Max Recovery Days", "Value": fmt_num(d.get("max_recovery_days"), 1), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Avg TUW Days", "Value": fmt_num(avg_tuw_days, 1), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Recovery Success Rate", "Value": fmt_pct(d.get("recovery_success_ratio")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Recovery Efficiency", "Value": fmt_num(d.get("recovery_efficiency"), 6), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Sharpe Ratio", "Value": fmt_num(d.get("sharpe")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Debt / Equity", "Value": fmt_num(d.get("debt_eq")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Current Ratio", "Value": fmt_num(d.get("current_ratio")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Quick Ratio", "Value": fmt_num(d.get("quick_ratio")), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Interest Coverage", "Value": f"{d.get('ic'):.1f}×" if d.get("ic") else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Altman Z-Score", "Value": fmt_num(d.get("zscore")), "Signal": _sig(None), "Comment": ""},
+            {
+                "Metric": "52w Low",
+                "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_low'):,.2f}" if d.get("w52_low") else "—",
+                "Signal": _sig(None),
+                "Comment": f"{d.get('w52_low_date')} · {_days_ago(d.get('w52_low_days'))}" if d.get("w52_low_date") else ""
+            },
+            {
+                "Metric": "Distance to 52w Low",
+                "Value": f"+{d52l*100:.1f}%" if d52l is not None else "—",
+                "Signal": _sig("good" if d52l is not None and d52l < 0.10
+                               else "warn" if d52l is not None and d52l < 0.25
+                               else None),
+                "Comment": "Near 52w low — potential entry" if d52l is not None and d52l < 0.10 else
+                           "Moderate distance from low" if d52l is not None and d52l < 0.25 else
+                           "Well above 52w low" if d52l is not None else ""
+            },
+            {
+                "Metric": "52w High",
+                "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_high'):,.2f}" if d.get("w52_high") else "—",
+                "Signal": _sig(None),
+                "Comment": f"{d.get('w52_high_date')} · {_days_ago(d.get('w52_high_days'))}" if d.get("w52_high_date") else ""
+            },
+            {
+                "Metric": "Distance from 52w High",
+                "Value": f"{d52h*100:.1f}%" if d52h is not None else "—",
+                "Signal": _sig("good" if d52h is not None and abs(d52h) < 0.05
+                               else "warn" if d52h is not None and abs(d52h) > 0.35
+                               else None),
+                "Comment": "Near 52w high — strong momentum" if d52h is not None and abs(d52h) < 0.05 else
+                           f"{abs(d52h)*100:.0f}% off the high" if d52h is not None else ""
+            },
+            {
+                "Metric": "Beta (β)",
+                "Value": fmt_num(beta_val),
+                "Signal": _sig("warn" if beta_val and beta_val > 1.5
+                               else "good" if beta_val and beta_val < 0.8
+                               else None),
+                "Comment": "High sensitivity" if beta_val and beta_val > 1.5 else
+                           "Defensive" if beta_val and beta_val < 0.8 else
+                           "Near-market" if beta_val is not None else ""
+            },
+            {
+                "Metric": "Annualised Volatility",
+                "Value": fmt_pct(vol_val),
+                "Signal": _sig("bad" if vol_val and vol_val > 0.35
+                               else "good" if vol_val and vol_val < 0.20
+                               else None),
+                "Comment": "Dispersion only; recovery profile is decisive"
+            },
+            {
+                "Metric": "Downside Volatility",
+                "Value": fmt_pct(downside_vol),
+                "Signal": _sig("bad" if downside_vol and downside_vol > 0.28
+                               else "warn" if downside_vol and downside_vol > 0.18
+                               else "good" if downside_vol is not None
+                               else None),
+                "Comment": "Negative-return volatility only"
+            },
+            {
+                "Metric": "Max Drawdown",
+                "Value": fmt_pct(mdd_val),
+                "Signal": _sig("bad" if mdd_val and abs(mdd_val) > 0.50
+                               else "warn" if mdd_val and abs(mdd_val) > 0.30
+                               else "good" if mdd_val is not None
+                               else None),
+                "Comment": "Worst peak-to-trough loss"
+            },
+            {
+                "Metric": "Ulcer Index",
+                "Value": fmt_num(ulcer),
+                "Signal": _sig("bad" if ulcer and ulcer > 20
+                               else "warn" if ulcer and ulcer > 12
+                               else "good" if ulcer is not None
+                               else None),
+                "Comment": "Depth × duration of drawdowns"
+            },
+            {
+                "Metric": "Time Under Water",
+                "Value": fmt_pct(tuw),
+                "Signal": _sig("bad" if tuw and tuw > 0.60
+                               else "warn" if tuw and tuw > 0.40
+                               else "good" if tuw is not None
+                               else None),
+                "Comment": "Share of time below prior highs"
+            },
+            {
+                "Metric": "Avg Recovery Days",
+                "Value": fmt_num(avg_rec, 1),
+                "Signal": _sig("bad" if avg_rec and avg_rec > 120
+                               else "warn" if avg_rec and avg_rec > 60
+                               else "good" if avg_rec is not None
+                               else None),
+                "Comment": "Average trough-to-prior-peak healing time"
+            },
+            {
+                "Metric": "Median Recovery Days",
+                "Value": fmt_num(median_rec, 1),
+                "Signal": _sig("bad" if median_rec and median_rec > 120
+                               else "warn" if median_rec and median_rec > 60
+                               else "good" if median_rec is not None
+                               else None),
+                "Comment": "Median healing time"
+            },
+            {
+                "Metric": "Max Recovery Days",
+                "Value": fmt_num(max_rec, 1),
+                "Signal": _sig("bad" if max_rec and max_rec > 250
+                               else "warn" if max_rec and max_rec > 120
+                               else "good" if max_rec is not None
+                               else None),
+                "Comment": "Worst observed healing cycle"
+            },
+            {
+                "Metric": "Avg TUW Days",
+                "Value": fmt_num(avg_tuw_days, 1),
+                "Signal": _sig("bad" if avg_tuw_days and avg_tuw_days > 180
+                               else "warn" if avg_tuw_days and avg_tuw_days > 90
+                               else "good" if avg_tuw_days is not None
+                               else None),
+                "Comment": "Average total time below prior highs"
+            },
+            {
+                "Metric": "Recovery Success Rate",
+                "Value": fmt_pct(rec_success),
+                "Signal": _sig("good" if rec_success and rec_success > 0.70
+                               else "warn" if rec_success and rec_success > 0.50
+                               else "bad" if rec_success is not None
+                               else None),
+                "Comment": "Share of drawdowns that fully recovered"
+            },
+            {
+                "Metric": "Recovery Efficiency",
+                "Value": fmt_num(rec_eff, 6),
+                "Signal": _sig("good" if rec_eff and rec_eff > 0.0035
+                               else "warn" if rec_eff and rec_eff > 0.0015
+                               else "bad" if rec_eff is not None
+                               else None),
+                "Comment": "Drawdown depth healed per recovery day"
+            },
+            {
+                "Metric": "Sharpe Ratio",
+                "Value": fmt_num(sharpe),
+                "Signal": _sig("good" if sharpe and sharpe > 1.3
+                               else "bad" if sharpe and sharpe < 0.8
+                               else None),
+                "Comment": "Classic return/volatility metric"
+            },
+            {
+                "Metric": "Debt / Equity",
+                "Value": fmt_num(deq),
+                "Signal": _sig("bad" if deq and deq > 2
+                               else "good" if deq and deq < 0.5
+                               else None),
+                "Comment": "High leverage" if deq and deq > 2 else
+                           "Conservative" if deq and deq < 0.5 else ""
+            },
+            {
+                "Metric": "Current Ratio",
+                "Value": fmt_num(cr),
+                "Signal": _sig("good" if cr and cr > 1.5
+                               else "bad" if cr and cr < 1
+                               else None),
+                "Comment": "Strong liquidity" if cr and cr > 2 else
+                           "Liquidity concern" if cr and cr < 1 else ""
+            },
+            {
+                "Metric": "Quick Ratio",
+                "Value": fmt_num(qr),
+                "Signal": _sig("good" if qr and qr > 1.2
+                               else "bad" if qr and qr < 0.8
+                               else None),
+                "Comment": ""
+            },
+            {
+                "Metric": "Interest Coverage",
+                "Value": f"{ic:.1f}×" if ic else "—",
+                "Signal": _sig("good" if ic and ic > 10
+                               else "bad" if ic and ic < 3
+                               else None),
+                "Comment": "Very comfortable" if ic and ic > 20 else
+                           "Debt strain" if ic and ic < 3 else ""
+            },
+            {
+                "Metric": "Altman Z-Score",
+                "Value": fmt_num(zscore_val),
+                "Signal": _sig("good" if zscore_val and zscore_val > 3
+                               else "bad" if zscore_val and zscore_val < 1.8
+                               else "warn"),
+                "Comment": "Safe zone" if zscore_val and zscore_val > 3 else
+                           "Distress zone" if zscore_val and zscore_val < 1.8 else
+                           "Grey zone"
+            },
         ]
+
         _render_table(rows)
 
 # ═══════════════════════════════════════════════════════════════
