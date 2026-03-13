@@ -2437,6 +2437,12 @@ def render_sidebar() -> tuple[list[str], int, str]:
         </div>
         """, unsafe_allow_html=True)
 
+        if st.button("🔄  Refresh Data", use_container_width=True,
+                     help="Cache leeren — erzwingt neue Daten von Yahoo Finance"):
+            fetch_ticker_data.clear()
+            search_tickers.clear()
+            st.rerun()
+
         return (
             st.session_state.get("tickers", ["AAPL"]),
             int(yr),
@@ -2448,6 +2454,12 @@ def render_sidebar() -> tuple[list[str], int, str]:
 # ═══════════════════════════════════════════════════════════════
 
 def main():
+    # Force-bust stale cache on code deploy (increment version when schema changes)
+    _CACHE_VERSION = "v4"  # bump this when fetch_ticker_data return dict changes
+    if st.session_state.get("_cache_ver") != _CACHE_VERSION:
+        fetch_ticker_data.clear()
+        st.session_state["_cache_ver"] = _CACHE_VERSION
+
     # Init session state
     if "tickers"   not in st.session_state: st.session_state.tickers   = ["AAPL"]
     if "active"    not in st.session_state: st.session_state.active    = "AAPL"
