@@ -39,6 +39,10 @@ FALL       = "#944848"
 CAUTION    = "#A08030"
 DEPTH      = "#5B6B8A"
 WHITE      = "#FFFFFF"
+GRID       = "#E8E3DA"
+CAUTION    = "#A08030"
+DEPTH      = "#5B6B8A"
+WHITE      = "#FFFFFF"
 
 # ═══════════════════════════════════════════════════════════════
 # GLOBAL CSS  — matches the Maison aesthetic
@@ -47,6 +51,7 @@ WHITE      = "#FFFFFF"
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300&family=Outfit:wght@300;400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
 
   /* Root */
   .stApp {{ background: {STONE}; }}
@@ -190,6 +195,32 @@ st.markdown(f"""
     color: {INK};
     letter-spacing: -0.04em;
     line-height: 1;
+  }}
+
+  /* ── Sidebar collapse/expand button: render as icon not text ── */
+  [data-testid="collapsedControl"] span,
+  button[kind="header"] span,
+  [data-testid="baseButton-header"] span {{
+    font-family: 'Material Icons' !important;
+    font-size: 22px !important;
+    font-weight: normal !important;
+    font-style: normal !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    color: {GOLD};
+  }}
+  /* Streamlit ≥1.35 uses a different selector */
+  [data-testid="collapsedControl"] {{
+    background: {STONE} !important;
+    border-radius: 0 8px 8px 0 !important;
+    border: 1px solid #DDD8CE !important;
+    border-left: none !important;
+  }}
+  [data-testid="collapsedControl"]:hover {{
+    background: {GOLD_PALE} !important;
   }}
 </style>
 """, unsafe_allow_html=True)
