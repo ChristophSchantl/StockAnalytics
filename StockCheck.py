@@ -1560,25 +1560,82 @@ def render_ticker_detail(symbol: str, years: int):
     pe, ps, pb = d.get("pe"), d.get("ps"), d.get("pb")
     dy, beta, vol = d.get("div_yield") or 0, d.get("beta"), d.get("vol")
 
+        # ── KPI Row ─────────────────────────────────────────────────
     k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+
+    pe = d.get("pe")
+    ps = d.get("ps")
+    pb = d.get("pb")
+    dy = d.get("div_yield") or 0
+    beta = d.get("beta")
+    vol = d.get("vol")
+
     with k1:
-        st.metric("P/E", f"{pe:.1f}×" if pe else "—")
+        delta_pe = "Undervalued" if pe and pe < 10 else ("Premium" if pe and pe > 50 else None)
+        st.metric(
+            "P/E",
+            f"{pe:.1f}×" if pe else "—",
+            delta=delta_pe,
+            delta_color="normal" if delta_pe == "Undervalued"
+            else ("inverse" if delta_pe == "Premium" else "off")
+        )
+
     with k2:
         st.metric("P/S", f"{ps:.1f}×" if ps else "—")
+
     with k3:
-        st.metric("P/B", f"{pb:.1f}×" if pb else "—")
+        below_book = "Below book" if pb and pb < 1 else None
+        st.metric(
+            "P/B",
+            f"{pb:.1f}×" if pb else "—",
+            delta=below_book,
+            delta_color="normal" if below_book else "off"
+        )
+
     with k4:
-        st.metric("Div. Yield", fmt_pct(dy) if dy else "—")
+        st.metric("DIV. YIELD", fmt_pct(dy) if dy else "—")
+
     with k5:
         d52l_val = d.get("dist_52w_low")
-        st.metric("vs 52w Low", f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—")
+        st.metric(
+            "VS 52W LOW",
+            f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—",
+            delta=(
+                "Near low ⚠" if d52l_val is not None and d52l_val < 0.05 else
+                "Strong cushion" if d52l_val is not None and d52l_val > 0.30 else None
+            ),
+            delta_color=(
+                "inverse" if d52l_val is not None and d52l_val < 0.05 else
+                "normal" if d52l_val is not None and d52l_val > 0.30 else "off"
+            )
+        )
+
     with k6:
-        st.metric("Beta (β)", f"{beta:.2f}" if beta else "—")
+        beta_note = "High β" if beta and beta > 1.5 else ("Defensive" if beta and beta < 0.8 else None)
+        st.metric(
+            "BETA (B)",
+            f"{beta:.2f}" if beta else "—",
+            delta=beta_note,
+            delta_color=(
+                "inverse" if beta_note == "High β" else
+                "normal" if beta_note == "Defensive" else "off"
+            )
+        )
+
     with k7:
-        st.metric("Volatility", fmt_pct(vol))
+        st.metric("VOLATILITY", fmt_pct(vol), delta_color="off")
+
     with k8:
         d52h_val = d.get("dist_52w_high")
-        st.metric("vs 52w High", f"{d52h_val*100:.1f}%" if d52h_val is not None else "—")
+        st.metric(
+            "VS 52W HIGH",
+            f"{d52h_val*100:.1f}%" if d52h_val is not None else "—",
+            delta=(
+                "At peak 🔝" if d52h_val is not None and abs(d52h_val) < 0.03 else
+                f"{abs(d52h_val)*100:.0f}% off high" if d52h_val is not None else None
+            ),
+            delta_color=("normal" if d52h_val is not None and abs(d52h_val) < 0.03 else "off")
+        )
 
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
