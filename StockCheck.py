@@ -1050,10 +1050,15 @@ def _prices_to_df(prices: list[dict], years: int = 10) -> pd.DataFrame:
     df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
     return df
 
-return extract_recovery_cycles_from_closes(
-    df["price"].astype(float).values,
-    df["date"].values
-)
+def extract_recovery_cycles(prices: list[dict], years: int = 10) -> pd.DataFrame:
+    df = _prices_to_df(prices, years)
+    if df.empty:
+        return pd.DataFrame()
+
+    return extract_recovery_cycles_from_closes(
+        df["price"].astype(float).values,
+        pd.to_datetime(df["date"]).values
+    )
 
 def price_vs_running_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
     df = _prices_to_df(prices, years)
