@@ -1004,50 +1004,200 @@ def range_52w_chart(d: dict) -> go.Figure | None:
     low = d.get("w52_low")
     high = d.get("w52_high")
     price = d.get("price")
+    cur = cur_sym(d.get("currency", "USD"))
+    dist_low = d.get("dist_52w_low")
 
     if not low or not high or not price or high <= low:
         return None
 
     span = high - low
     p_pct = (price - low) / span * 100
-    price_color = RISE if p_pct >= 66 else FALL if p_pct <= 33 else GOLD
+
+    if p_pct >= 66:
+        price_color = RISE
+    elif p_pct <= 33:
+        price_color = FALL
+    else:
+        price_color = GOLD
 
     fig = go.Figure()
     pad = span * 0.22
 
+    # Background zone
     fig.add_shape(
-        type="rect", x0=0.25, x1=0.75, y0=low - pad * 0.3, y1=high + pad * 0.3,
-        fillcolor="rgba(182,157,95,0.04)", line=dict(width=0), layer="below"
+        type="rect",
+        x0=0.25, x1=0.75,
+        y0=low - pad * 0.3, y1=high + pad * 0.3,
+        fillcolor="rgba(182,157,95,0.04)",
+        line=dict(width=0),
+        layer="below"
     )
+
+    # Main vertical line
     fig.add_shape(
-        type="line", x0=0.5, x1=0.5, y0=low, y1=high,
-        line=dict(color=GRID, width=2), layer="below"
+        type="line",
+        x0=0.5, x1=0.5,
+        y0=low, y1=high,
+        line=dict(color=GRID, width=2),
+        layer="below"
     )
+
+    # Current price line
     fig.add_shape(
-        type="line", x0=0.3, x1=0.7, y0=price, y1=price,
+        type="line",
+        x0=0.30, x1=0.70,
+        y0=price, y1=price,
         line=dict(color=price_color, width=3)
     )
+
+    # Current price marker
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[price], mode="markers",
-        marker=dict(size=16, color=price_color, line=dict(color=WHITE, width=2.5)),
+        x=[0.5], y=[price],
+        mode="markers",
+        marker=dict(
+            size=16,
+            color=price_color,
+            line=dict(color=WHITE, width=2.5)
+        ),
         showlegend=False,
-        hovertemplate=f"<b>Current</b><br>{cur_sym(d.get('currency','USD'))}{price:,.2f}<extra></extra>",
+        hovertemplate=f"<b>Current</b><br>{cur}{price:,.2f}<extra></extra>",
     ))
+
+    # High / low markers
+    fig.add_trace(go.Scatter(
+        x=[0.5], y=[high],
+        mode="markers",
+        marker=dict(size=9, color=RISE, symbol="triangle-up",
+                    line=dict(color=WHITE, width=1.5)),
+        showlegend=False,
+        hovertemplate=f"<b>52w High</b><br>{cur}{high:,.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[0.5], y=[low],
+        mode="markers",
+        marker=dict(size=9, color=FALL, symbol="triangle-down",
+                    line=dict(color=WHITE, width=1.5)),
+        showlegend=False,
+        hovertemplate=f"<b>52w Low</b><br>{cur}{low:,.2f}<extra></extra>",
+    ))
+
+    # Left percentage label
+    fig.add_annotation(
+        x=0.08,
+        y=(low + high) / 2,
+        xref="x",
+        yref="y",
+        text=(
+            f"<b style='font-size:22px;font-family:Cormorant Garamond,serif;"
+            f"color:{price_color}'>{p_pct:.0f}%</b><br>"
+            f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>OF RANGE</span>"
+        ),
+        showarrow=False,
+        xanchor="center",
+        yanchor="middle"
+    )
+
+    # smart label placement right side
+    norm_high = 1.0
+    norm_price = p_pct / 100
+    norm_low = 0.0
+    min_gap = 0.18
+
+    y_high_n = norm_high
+    y_price_n = norm_price
+    y_low_n = norm_low
+
+    if y_high_n - y_price_n < min_gap:
+        y_price_n = norm_high - min_gap
+    if y_price_n - y_low_n < min_gap:
+        y_price_n = norm_low + min_gap
+        if y_high_n - y_price_n < min_gap:
+            y_high_n = y_price_n + min_gap
+
+    def n2p(n):
+        return low + n * span
+
+    y_high_lbl = n2p(y_high_n)
+    y_price_lbl = n2p(y_price_n)
+    y_low_lbl = n2p(y_low_n)
+
+    # connector lines if needed
+    connector_thresh = span * 0.04
+    for actual, label_y, color in [
+        (high, y_high_lbl, RISE),
+        (price, y_price_lbl, price_color),
+        (low, y_low_lbl, FALL),
+    ]:
+        if abs(actual - label_y) > connector_thresh:
+            fig.add_shape(
+                type="line",
+                x0=0.72, x1=0.76,
+                y0=actual, y1=label_y,
+                line=dict(color=color, width=1, dash="dot")
+            )
+
+    dist_label = f"+{dist_low*100:.1f}% above low" if dist_low is not None else ""
+
+    annotations = [
+        dict(
+            x=0.79, y=y_high_lbl,
+            text=(
+                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>52W HIGH</span><br>"
+                f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;color:{RISE}'>{cur}{high:,.2f}</b>"
+            )
+        ),
+        dict(
+            x=0.79, y=y_price_lbl,
+            text=(
+                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>CURRENT</span><br>"
+                f"<b style='font-size:17px;font-family:Cormorant Garamond,serif;color:{price_color}'>{cur}{price:,.2f}</b>"
+                + (f"<br><span style='font-size:9px;color:{price_color}'>{dist_label}</span>" if dist_label else "")
+            )
+        ),
+        dict(
+            x=0.79, y=y_low_lbl,
+            text=(
+                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>52W LOW</span><br>"
+                f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;color:{FALL}'>{cur}{low:,.2f}</b>"
+            )
+        ),
+    ]
+
+    for ann in annotations:
+        fig.add_annotation(
+            x=ann["x"], y=ann["y"],
+            xref="x", yref="y",
+            text=ann["text"],
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(family="Outfit, sans-serif", size=11)
+        )
 
     fig.update_layout(
         paper_bgcolor=STONE,
         plot_bgcolor=STONE,
         height=340,
         margin=dict(l=10, r=10, t=20, b=20),
-        xaxis=dict(range=[0, 1], showgrid=False, showticklabels=False, zeroline=False, showline=False, fixedrange=True),
-        yaxis=dict(range=[low - pad, high + pad], showgrid=False, showticklabels=False, zeroline=False, showline=False, fixedrange=True),
-        showlegend=False,
-        annotations=[dict(
-            x=0.08, y=(low + high) / 2, xref="x", yref="y",
-            text=f"<b style='font-size:22px;color:{price_color}'>{p_pct:.0f}%</b><br><span style='font-size:9px;color:{INK_LIGHT}'>OF RANGE</span>",
-            showarrow=False
-        )]
+        xaxis=dict(
+            range=[0, 1.62],
+            showgrid=False,
+            showticklabels=False,
+            zeroline=False,
+            showline=False,
+            fixedrange=True
+        ),
+        yaxis=dict(
+            range=[low - pad, high + pad],
+            showgrid=False,
+            showticklabels=False,
+            zeroline=False,
+            showline=False,
+            fixedrange=True
+        ),
+        showlegend=False
     )
+
     return fig
 
 def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
