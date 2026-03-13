@@ -32,19 +32,19 @@ st.set_page_config(
 # DESIGN TOKENS
 # ═══════════════════════════════════════════════════════════════
 
-GOLD       = "#B69D5F"
-GOLD_DEEP  = "#9A8243"
-GOLD_PALE  = "#EDE4CC"
-STONE      = "#F5F1EB"
-INK        = "#1E1E1E"
-INK_MID    = "#6E6E6E"
-INK_LIGHT  = "#9C9C9C"
-RISE       = "#4D7C5B"
-FALL       = "#944848"
-CAUTION    = "#A08030"
-DEPTH      = "#5B6B8A"
-WHITE      = "#FFFFFF"
-GRID       = "#DDD8CE"
+GOLD = "#B69D5F"
+GOLD_DEEP = "#9A8243"
+GOLD_PALE = "#EDE4CC"
+STONE = "#F5F1EB"
+INK = "#1E1E1E"
+INK_MID = "#6E6E6E"
+INK_LIGHT = "#9C9C9C"
+RISE = "#4D7C5B"
+FALL = "#944848"
+CAUTION = "#A08030"
+DEPTH = "#5B6B8A"
+WHITE = "#FFFFFF"
+GRID = "#DDD8CE"
 
 # ═══════════════════════════════════════════════════════════════
 # GLOBAL CSS
@@ -209,14 +209,14 @@ st.markdown(f"""
 
 def _search_session() -> requests.Session:
     import random
-    _UA_POOL = [
+    ua_pool = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
         "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
     ]
     session = requests.Session()
     session.headers.update({
-        "User-Agent": random.choice(_UA_POOL),
+        "User-Agent": random.choice(ua_pool),
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
@@ -265,14 +265,19 @@ def fmt_big(v, cur="$"):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
     a = abs(v)
-    if a >= 1e12: return f"{cur}{v/1e12:.2f}T"
-    if a >= 1e9:  return f"{cur}{v/1e9:.2f}B"
-    if a >= 1e6:  return f"{cur}{v/1e6:.2f}M"
+    if a >= 1e12:
+        return f"{cur}{v/1e12:.2f}T"
+    if a >= 1e9:
+        return f"{cur}{v/1e9:.2f}B"
+    if a >= 1e6:
+        return f"{cur}{v/1e6:.2f}M"
     return f"{cur}{v:,.0f}"
 
 def cur_sym(c: str) -> str:
-    return {"USD":"$","EUR":"€","GBP":"£","JPY":"¥","CHF":"Fr.",
-            "HKD":"HK$","CAD":"C$","AUD":"A$","INR":"₹","CNY":"¥"}.get(c, c)
+    return {
+        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr.",
+        "HKD": "HK$", "CAD": "C$", "AUD": "A$", "INR": "₹", "CNY": "¥"
+    }.get(c, c)
 
 def _sig(tone):
     return {"good": "🟢", "bad": "🔴", "warn": "🟡", None: ""}[tone]
@@ -299,45 +304,38 @@ def _base_layout(height=260):
         plot_bgcolor=STONE,
         margin=dict(l=10, r=10, t=40, b=20),
         height=height,
-        xaxis=dict(showgrid=False, tickfont=dict(size=10, color=INK_LIGHT),
-                   zeroline=False, showline=False),
-        yaxis=dict(showgrid=True, gridcolor=GRID, gridwidth=1,
-                   tickfont=dict(size=10, color=INK_LIGHT),
-                   zeroline=False, showline=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    x=0, font=dict(size=11, color=INK_MID)),
+        xaxis=dict(
+            showgrid=False,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            zeroline=False,
+            showline=False
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=GRID,
+            gridwidth=1,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            zeroline=False,
+            showline=False
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            x=0,
+            font=dict(size=11, color=INK_MID),
+        ),
     )
 
 # ═══════════════════════════════════════════════════════════════
-# RISK / RECOVERY CORE
+# RECOVERY CORE
 # ═══════════════════════════════════════════════════════════════
 
-def _empty_risk_dict() -> dict:
-    return {
-        "vol": None,
-        "downside_vol": None,
-        "mdd": None,
-        "sharpe": None,
-        "ulcer_index": None,
-        "pct_time_under_water": None,
-        "avg_recovery_days": None,
-        "max_recovery_days": None,
-        "recovery_success_ratio": None,
-        "recovery_efficiency": None,
-    }
-
 def extract_recovery_cycles_from_closes(closes: np.ndarray, dates) -> pd.DataFrame:
-    """
-    Extract drawdown / recovery cycles from close prices.
-    Robust against pandas Series / DatetimeIndex / numpy arrays.
-    """
     if closes is None or len(closes) < 3 or dates is None or len(dates) != len(closes):
         return pd.DataFrame()
 
     closes = np.asarray(closes, dtype=float)
-
-    # IMPORTANT FIX:
-    # force dates into positional datetime array, so [-1] works safely
     dates = pd.to_datetime(pd.Index(dates))
 
     peaks = np.maximum.accumulate(closes)
@@ -373,7 +371,6 @@ def extract_recovery_cycles_from_closes(closes: np.ndarray, dates) -> pd.DataFra
         rel_trough_idx = int(np.argmin(segment_prices))
         trough_idx = seg_start + rel_trough_idx
         trough_price = closes[trough_idx]
-
         dd_depth = (trough_price - peak_price) / peak_price if peak_price > 0 else np.nan
 
         peak_date = pd.Timestamp(dates[peak_idx])
@@ -411,12 +408,37 @@ def extract_recovery_cycles_from_closes(closes: np.ndarray, dates) -> pd.DataFra
 
     return pd.DataFrame(cycles).sort_values("peak_date").reset_index(drop=True)
 
-def _compute_risk(closes: np.ndarray, dates: pd.Index | None = None) -> dict:
+def extract_recovery_cycles(prices: list[dict], years: int = 10) -> pd.DataFrame:
+    df = _prices_to_df(prices, years)
+    if df.empty:
+        return pd.DataFrame()
+
+    return extract_recovery_cycles_from_closes(
+        df["price"].astype(float).values,
+        pd.to_datetime(df["date"]).values
+    )
+
+def _empty_risk_dict() -> dict:
+    return {
+        "vol": None,
+        "downside_vol": None,
+        "mdd": None,
+        "sharpe": None,
+        "ulcer_index": None,
+        "pct_time_under_water": None,
+        "avg_recovery_days": None,
+        "max_recovery_days": None,
+        "recovery_success_ratio": None,
+        "recovery_efficiency": None,
+    }
+
+def _compute_risk(closes: np.ndarray, dates=None) -> dict:
     if closes is None or len(closes) < 60:
         return _empty_risk_dict()
 
     closes = np.asarray(closes, dtype=float)
     closes = closes[np.isfinite(closes) & (closes > 0)]
+
     if len(closes) < 60:
         return _empty_risk_dict()
 
@@ -435,6 +457,7 @@ def _compute_risk(closes: np.ndarray, dates: pd.Index | None = None) -> dict:
 
     peaks = np.maximum.accumulate(closes)
     drawdowns = (closes - peaks) / peaks
+
     mdd = float(np.min(drawdowns))
     ulcer_index = float(np.sqrt(np.mean((drawdowns * 100.0) ** 2)))
     pct_time_under_water = float(np.mean(drawdowns < 0))
@@ -478,7 +501,7 @@ def _altman_z_v2(ta, retained, ebitda_val, mkt_cap, revenue, cur_assets, cur_lia
         C = ebit / ta
         D = mkt_cap / tl
         E = revenue / ta
-        z = 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
+        z = 1.2 * A + 1.4 * B + 3.3 * C + 0.6 * D + 1.0 * E
         return round(z, 2) if 0 < z < 50 else None
     except Exception:
         return None
@@ -508,10 +531,12 @@ def fetch_ticker_data(symbol: str) -> dict:
         except Exception:
             info = {}
 
-        _BAD_NAMES = {"EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY",
-                      "FUTURE", "OPTION", symbol.upper()}
+        bad_names = {
+            "EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY",
+            "FUTURE", "OPTION", symbol.upper()
+        }
         raw_name = (info.get("longName") or info.get("shortName") or "").strip()
-        name = raw_name if raw_name and raw_name.upper() not in _BAD_NAMES else symbol.upper()
+        name = raw_name if raw_name and raw_name.upper() not in bad_names else symbol.upper()
 
         if name == symbol.upper():
             try:
@@ -519,7 +544,7 @@ def fetch_ticker_data(symbol: str) -> dict:
                 if results:
                     q = results[0]
                     candidate = q.get("longname") or q.get("shortname") or ""
-                    if candidate and candidate.upper() not in _BAD_NAMES:
+                    if candidate and candidate.upper() not in bad_names:
                         name = candidate
             except Exception:
                 pass
@@ -548,8 +573,12 @@ def fetch_ticker_data(symbol: str) -> dict:
                 interest_exp = _row(inc, "Interest Expense")
                 if ebitda_val is None:
                     ebit = _row(inc, "EBIT", "Operating Income")
-                    da = _row(inc, "Depreciation", "Reconciled Depreciation",
-                              "Depreciation And Amortization")
+                    da = _row(
+                        inc,
+                        "Depreciation",
+                        "Reconciled Depreciation",
+                        "Depreciation And Amortization"
+                    )
                     if ebit is not None and da is not None:
                         ebitda_val = ebit + abs(da)
         except Exception:
@@ -566,14 +595,19 @@ def fetch_ticker_data(symbol: str) -> dict:
                 cur_assets = _row(bs, "Current Assets", "Total Current Assets")
                 cur_liab = _row(bs, "Current Liabilities", "Total Current Liabilities")
                 total_debt = _row(bs, "Total Debt", "Long Term Debt")
-                equity = _row(bs, "Stockholders Equity", "Total Stockholder Equity",
-                              "Common Stock Equity", "Total Equity Gross Minority Interest")
+                equity = _row(
+                    bs,
+                    "Stockholders Equity",
+                    "Total Stockholder Equity",
+                    "Common Stock Equity",
+                    "Total Equity Gross Minority Interest"
+                )
         except Exception:
             pass
 
         prices = []
         hist_close = np.array([])
-        hist_dates = []
+        hist_dates = pd.Index([])
 
         try:
             hist = tk.history(period="10y", auto_adjust=True, actions=False, timeout=20)
@@ -598,8 +632,7 @@ def fetch_ticker_data(symbol: str) -> dict:
         beta = _safe(info.get("beta"))
         if beta is None and len(hist_returns) > 60:
             try:
-                spy = yf.Ticker("^GSPC").history(period="5y", auto_adjust=True,
-                                                actions=False, timeout=15)
+                spy = yf.Ticker("^GSPC").history(period="5y", auto_adjust=True, actions=False, timeout=15)
                 if spy is not None and not spy.empty:
                     spy = spy[["Close"]].dropna()
                     spy.index = pd.to_datetime(spy.index).tz_localize(None)
@@ -661,7 +694,7 @@ def fetch_ticker_data(symbol: str) -> dict:
 
         quick_r = _safe(info.get("quickRatio"))
         if quick_r is None and cur_assets and cur_liab and cur_liab != 0:
-            quick_r = (cur_assets - 0) / cur_liab
+            quick_r = cur_assets / cur_liab
 
         ic = None
         if ebitda_val and interest_exp and abs(interest_exp) > 0:
@@ -689,8 +722,10 @@ def fetch_ticker_data(symbol: str) -> dict:
 
         payout = _safe(info.get("payoutRatio")) or 0.0
 
-        zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
-                              revenue, cur_assets, cur_liab, total_liab)
+        zscore = _altman_z_v2(
+            total_assets, retained, ebitda_val, mkt_cap,
+            revenue, cur_assets, cur_liab, total_liab
+        )
         risk = _compute_risk(hist_close, hist_dates if len(hist_dates) == len(hist_close) else None)
 
         w52_low = w52_high = dist_52w_low = dist_52w_high = None
@@ -758,14 +793,15 @@ def fetch_ticker_data(symbol: str) -> dict:
             **risk,
             "w52_low": w52_low,
             "w52_high": w52_high,
-            "w52_low_date": w52_low_date.strftime("%Y-%m-%d") if w52_low_date else None,
-            "w52_high_date": w52_high_date.strftime("%Y-%m-%d") if w52_high_date else None,
+            "w52_low_date": w52_low_date.strftime("%Y-%m-%d") if w52_low_date is not None else None,
+            "w52_high_date": w52_high_date.strftime("%Y-%m-%d") if w52_high_date is not None else None,
             "w52_low_days": w52_low_days,
             "w52_high_days": w52_high_days,
             "dist_52w_low": dist_52w_low,
             "dist_52w_high": dist_52w_high,
             "prices": prices,
         }
+
     except Exception as e:
         return {"symbol": symbol, "error": str(e), "prices": []}
 
@@ -797,6 +833,7 @@ def search_tickers(query: str) -> list[dict]:
 def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go.Figure:
     if not prices:
         return go.Figure()
+
     df = pd.DataFrame(prices)
     df["date"] = pd.to_datetime(df["date"])
     cutoff = datetime.now() - timedelta(days=years * 365)
@@ -807,11 +844,12 @@ def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go
     first, last = df["price"].iloc[0], df["price"].iloc[-1]
     chg_pct = (last - first) / first * 100
     color = RISE if chg_pct >= 0 else FALL
-    rgb = ",".join(str(int(color.lstrip('#')[i:i+2], 16)) for i in (0,2,4))
+    rgb = ",".join(str(int(color.lstrip("#")[i:i+2], 16)) for i in (0, 2, 4))
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["date"], y=df["price"],
+        x=df["date"],
+        y=df["price"],
         mode="lines",
         line=dict(color=color, width=1.6),
         fill="tozeroy",
@@ -842,11 +880,12 @@ def income_chart(d: dict) -> go.Figure:
         return fig
 
     labels = [i[0] for i in items]
-    values = [i[1]/1e9 for i in items]
+    values = [i[1] / 1e9 for i in items]
     colors = [i[2] for i in items]
 
     fig = go.Figure(go.Bar(
-        x=labels, y=values,
+        x=labels,
+        y=values,
         marker_color=colors,
         text=[f"{cur}{v:.1f}B" for v in values],
         textposition="outside",
@@ -888,17 +927,20 @@ def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
         _clamp(100 - (d.get("pct_time_under_water") or 0.5) * 100, 0, 100),
         _clamp((d.get("recovery_success_ratio") or 0.5) * 100, 0, 100),
     ])
+
     momentum = 50
     if d.get("prices") and len(d["prices"]) > 260:
         closes = [p["price"] for p in d["prices"]]
         r1y = (closes[-1] - closes[-252]) / closes[-252] * 100
         momentum = round(_clamp(50 + r1y * 0.5, 0, 100))
+
     convexity = 50
     if d.get("prices") and len(d["prices"]) > 60:
         closes = np.array([p["price"] for p in d["prices"]], dtype=float)
         rets = np.diff(np.log(closes[closes > 0]))
         if len(rets) > 20:
             convexity = round(_clamp(50 + float(pd.Series(rets).skew()) * 20, 0, 100))
+
     dividend = round(_clamp((d.get("div_yield") or 0) * 1000, 0, 100)) if d.get("div_yield") else 30
     liquidity = _avg([
         _clamp(((d.get("current_ratio") or 1.0) - 0.5) / 2.5 * 100, 0, 100),
@@ -935,9 +977,19 @@ def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
     fig.update_layout(
         polar=dict(
             bgcolor=STONE,
-            radialaxis=dict(visible=True, range=[0, 100], tickvals=[20, 40, 60, 80, 100],
-                            tickfont=dict(size=9, color=INK_LIGHT), gridcolor=GRID, linecolor=GRID),
-            angularaxis=dict(tickfont=dict(size=12, color=INK), gridcolor=GRID, linecolor=GRID),
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                tickvals=[20, 40, 60, 80, 100],
+                tickfont=dict(size=9, color=INK_LIGHT),
+                gridcolor=GRID,
+                linecolor=GRID
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=12, color=INK),
+                gridcolor=GRID,
+                linecolor=GRID
+            ),
         ),
         paper_bgcolor=STONE,
         plot_bgcolor=STONE,
@@ -963,13 +1015,18 @@ def range_52w_chart(d: dict) -> go.Figure | None:
     fig = go.Figure()
     pad = span * 0.22
 
-    fig.add_shape(type="rect", x0=0.25, x1=0.75, y0=low - pad * 0.3, y1=high + pad * 0.3,
-                  fillcolor="rgba(182,157,95,0.04)", line=dict(width=0), layer="below")
-    fig.add_shape(type="line", x0=0.5, x1=0.5, y0=low, y1=high,
-                  line=dict(color=GRID, width=2), layer="below")
-
-    fig.add_shape(type="line", x0=0.3, x1=0.7, y0=price, y1=price,
-                  line=dict(color=price_color, width=3))
+    fig.add_shape(
+        type="rect", x0=0.25, x1=0.75, y0=low - pad * 0.3, y1=high + pad * 0.3,
+        fillcolor="rgba(182,157,95,0.04)", line=dict(width=0), layer="below"
+    )
+    fig.add_shape(
+        type="line", x0=0.5, x1=0.5, y0=low, y1=high,
+        line=dict(color=GRID, width=2), layer="below"
+    )
+    fig.add_shape(
+        type="line", x0=0.3, x1=0.7, y0=price, y1=price,
+        line=dict(color=price_color, width=3)
+    )
     fig.add_trace(go.Scatter(
         x=[0.5], y=[price], mode="markers",
         marker=dict(size=16, color=price_color, line=dict(color=WHITE, width=2.5)),
@@ -985,11 +1042,11 @@ def range_52w_chart(d: dict) -> go.Figure | None:
         xaxis=dict(range=[0, 1], showgrid=False, showticklabels=False, zeroline=False, showline=False, fixedrange=True),
         yaxis=dict(range=[low - pad, high + pad], showgrid=False, showticklabels=False, zeroline=False, showline=False, fixedrange=True),
         showlegend=False,
-        annotations=[
-            dict(x=0.08, y=(low+high)/2, xref="x", yref="y",
-                 text=f"<b style='font-size:22px;color:{price_color}'>{p_pct:.0f}%</b><br><span style='font-size:9px;color:{INK_LIGHT}'>OF RANGE</span>",
-                 showarrow=False)
-        ]
+        annotations=[dict(
+            x=0.08, y=(low + high) / 2, xref="x", yref="y",
+            text=f"<b style='font-size:22px;color:{price_color}'>{p_pct:.0f}%</b><br><span style='font-size:9px;color:{INK_LIGHT}'>OF RANGE</span>",
+            showarrow=False
+        )]
     )
     return fig
 
@@ -1000,7 +1057,8 @@ def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure
     clean_v = [v if v is not None else 0 for v in values]
 
     fig = go.Figure(go.Bar(
-        x=labels, y=clean_v,
+        x=labels,
+        y=clean_v,
         marker_color=colors,
         text=[f"{v:.2f}" if v is not None else "N/A" for v in values],
         textposition="outside",
@@ -1008,7 +1066,11 @@ def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure
         hovertemplate="%{x}: %{y:.2f}<extra></extra>",
     ))
     fig.update_traces(marker_line_width=0, width=0.45)
-    fig.update_layout(**_base_layout(240), title=dict(text=label, font=dict(size=11, color=INK_LIGHT), x=0, xanchor="left"), showlegend=False)
+    fig.update_layout(
+        **_base_layout(240),
+        title=dict(text=label, font=dict(size=11, color=INK_LIGHT), x=0, xanchor="left"),
+        showlegend=False
+    )
     return fig
 
 def portfolio_returns_chart(all_data: list[dict], years: int = 3) -> go.Figure:
@@ -1027,14 +1089,29 @@ def portfolio_returns_chart(all_data: list[dict], years: int = 3) -> go.Figure:
             continue
         df["norm"] = df["price"] / df["price"].iloc[0] * 100
         fig.add_trace(go.Scatter(
-            x=df["date"], y=df["norm"],
+            x=df["date"],
+            y=df["norm"],
             mode="lines",
             name=d["symbol"],
             line=dict(color=palette[i % len(palette)], width=1.8),
             hovertemplate=f"<b>{d['symbol']}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}<extra></extra>",
         ))
 
-    fig.update_layout(**_base_layout(320), yaxis_title="Indexed (base = 100)")
+    base = _base_layout(320).copy()
+    base.pop("yaxis", None)
+    fig.update_layout(
+        **base,
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=GRID,
+            gridwidth=1,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            zeroline=False,
+            showline=False,
+            title="Indexed (base = 100)",
+            title_font=dict(size=11, color=INK_MID),
+        )
+    )
     return fig
 
 # ═══════════════════════════════════════════════════════════════
@@ -1050,20 +1127,11 @@ def _prices_to_df(prices: list[dict], years: int = 10) -> pd.DataFrame:
     df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
     return df
 
-def extract_recovery_cycles(prices: list[dict], years: int = 10) -> pd.DataFrame:
-    df = _prices_to_df(prices, years)
-    if df.empty:
-        return pd.DataFrame()
-
-    return extract_recovery_cycles_from_closes(
-        df["price"].astype(float).values,
-        pd.to_datetime(df["date"]).values
-    )
-
 def price_vs_running_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
     df = _prices_to_df(prices, years)
     if df.empty:
         return go.Figure()
+
     df["peak"] = df["price"].cummax()
 
     fig = go.Figure()
@@ -1079,31 +1147,53 @@ def price_vs_running_peak_chart(prices: list[dict], years: int = 10) -> go.Figur
         name="Running Peak",
         hovertemplate="%{x|%b %d, %Y}<br>Peak: %{y:.2f}<extra></extra>",
     ))
-    fig.update_layout(**_base_layout(300), title=dict(text="Price vs Running Peak", x=0.5, xanchor="center", font=dict(size=15, color=INK)))
+    fig.update_layout(
+        **_base_layout(300),
+        title=dict(text="Price vs Running Peak", x=0.5, xanchor="center", font=dict(size=15, color=INK))
+    )
     return fig
 
 def drawdown_from_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
     df = _prices_to_df(prices, years)
     if df.empty:
         return go.Figure()
+
     df["peak"] = df["price"].cummax()
     df["drawdown_pct"] = (df["price"] - df["peak"]) / df["peak"] * 100
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["date"], y=df["drawdown_pct"],
+        x=df["date"],
+        y=df["drawdown_pct"],
         mode="lines",
         line=dict(color="#A85A5A", width=2),
         fill="tozeroy",
         fillcolor="rgba(148,72,72,0.18)",
         hovertemplate="%{x|%b %d, %Y}<br>Drawdown: %{y:.2f}%<extra></extra>",
     ))
+
+    base = _base_layout(300).copy()
+    base.pop("xaxis", None)
+    base.pop("yaxis", None)
+
     fig.update_layout(
-        **_base_layout(300),
+        **base,
         title=dict(text="Drawdown from Prior Peak", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
         showlegend=False,
-        yaxis=dict(showgrid=True, gridcolor=GRID, tickfont=dict(size=10, color=INK_LIGHT),
-                   ticksuffix="%", zeroline=True, zerolinecolor=GRID)
+        xaxis=dict(
+            showgrid=False,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            zeroline=False,
+            showline=False
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=GRID,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            ticksuffix="%",
+            zeroline=True,
+            zerolinecolor=GRID
+        )
     )
     return fig
 
@@ -1113,8 +1203,11 @@ def recovery_days_by_cycle_chart(cycles_df: pd.DataFrame) -> go.Figure:
         fig.update_layout(
             **_base_layout(300),
             title=dict(text="Recovery Days by Drawdown Cycle", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
-            annotations=[dict(text="No drawdown cycles found", x=0.5, y=0.5, xref="paper", yref="paper",
-                              showarrow=False, font=dict(size=13, color=INK_LIGHT))]
+            annotations=[dict(
+                text="No drawdown cycles found",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False, font=dict(size=13, color=INK_LIGHT)
+            )]
         )
         return fig
 
@@ -1125,23 +1218,35 @@ def recovery_days_by_cycle_chart(cycles_df: pd.DataFrame) -> go.Figure:
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df["cycle_label"], y=df["bar_value"],
+        x=df["cycle_label"],
+        y=df["bar_value"],
         marker_color=df["bar_color"],
         hovertemplate="<b>%{x}</b><br>Days: %{y:.0f}<extra></extra>",
     ))
+
+    base = _base_layout(300).copy()
+    base.pop("xaxis", None)
+    base.pop("yaxis", None)
+
     fig.update_layout(
-        **_base_layout(300),
+        **base,
         title=dict(text="Recovery Days by Drawdown Cycle", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
         showlegend=False,
         xaxis=dict(showgrid=False, tickangle=-45, tickfont=dict(size=10, color=INK_LIGHT)),
-        yaxis=dict(showgrid=True, gridcolor=GRID, tickfont=dict(size=10, color=INK_LIGHT),
-                   title="Days", title_font=dict(size=11, color=INK_MID))
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=GRID,
+            tickfont=dict(size=10, color=INK_LIGHT),
+            title="Days",
+            title_font=dict(size=11, color=INK_MID)
+        )
     )
     return fig
 
 def recovery_summary_html(d: dict, symbol: str, cycles_df: pd.DataFrame) -> str:
     median_rec = None
     avg_tuw_days = None
+
     if cycles_df is not None and not cycles_df.empty:
         recovered = cycles_df[cycles_df["recovered"] == True]
         median_rec = float(recovered["days_to_recover"].median()) if not recovered.empty else None
@@ -1158,10 +1263,12 @@ def recovery_summary_html(d: dict, symbol: str, cycles_df: pd.DataFrame) -> str:
         ("Avg TUW Days", fmt_num(avg_tuw_days, 1)),
         ("Recovery Efficiency", fmt_num(d.get("recovery_efficiency"), 6)),
     ]
+
     html_rows = "".join(
         f'<div class="summary-row"><div class="summary-label">{label}</div><div class="summary-value">{value}</div></div>'
         for label, value in rows
     )
+
     return f"""
     <div class="summary-card">
       <div class="summary-title">{symbol} · Recovery Summary</div>
@@ -1178,51 +1285,74 @@ def risk_score(d: dict) -> tuple[int, str, str]:
 
     zscore = d.get("zscore")
     if zscore is not None:
-        if zscore < 1.8: score += 20
-        elif zscore < 3.0: score += 10
+        if zscore < 1.8:
+            score += 20
+        elif zscore < 3.0:
+            score += 10
 
     debt_eq = d.get("debt_eq")
     if debt_eq is not None:
-        if debt_eq > 2.0: score += 15
-        elif debt_eq > 1.0: score += 8
+        if debt_eq > 2.0:
+            score += 15
+        elif debt_eq > 1.0:
+            score += 8
 
     mdd = d.get("mdd")
     if mdd is not None:
-        if abs(mdd) > 0.60: score += 20
-        elif abs(mdd) > 0.40: score += 12
-        elif abs(mdd) > 0.25: score += 6
+        if abs(mdd) > 0.60:
+            score += 20
+        elif abs(mdd) > 0.40:
+            score += 12
+        elif abs(mdd) > 0.25:
+            score += 6
 
     tuw = d.get("pct_time_under_water")
     if tuw is not None:
-        if tuw > 0.70: score += 18
-        elif tuw > 0.50: score += 10
-        elif tuw > 0.35: score += 5
+        if tuw > 0.70:
+            score += 18
+        elif tuw > 0.50:
+            score += 10
+        elif tuw > 0.35:
+            score += 5
 
     avg_rec = d.get("avg_recovery_days")
     if avg_rec is not None:
-        if avg_rec > 180: score += 18
-        elif avg_rec > 90: score += 10
-        elif avg_rec > 45: score += 5
+        if avg_rec > 180:
+            score += 18
+        elif avg_rec > 90:
+            score += 10
+        elif avg_rec > 45:
+            score += 5
 
     rec_success = d.get("recovery_success_ratio")
     if rec_success is not None:
-        if rec_success < 0.40: score += 15
-        elif rec_success < 0.65: score += 8
+        if rec_success < 0.40:
+            score += 15
+        elif rec_success < 0.65:
+            score += 8
 
     ulcer = d.get("ulcer_index")
     if ulcer is not None:
-        if ulcer > 25: score += 15
-        elif ulcer > 15: score += 8
+        if ulcer > 25:
+            score += 15
+        elif ulcer > 15:
+            score += 8
 
     vol = d.get("vol")
     if vol is not None:
-        if vol > 0.55: score += 8
-        elif vol > 0.35: score += 4
+        if vol > 0.55:
+            score += 8
+        elif vol > 0.35:
+            score += 4
 
     score = min(score, 100)
-    if score <= 20: return score, "Low", RISE
-    if score <= 40: return score, "Moderate", GOLD
-    if score <= 60: return score, "Elevated", CAUTION
+
+    if score <= 20:
+        return score, "Low", RISE
+    if score <= 40:
+        return score, "Moderate", GOLD
+    if score <= 60:
+        return score, "Elevated", CAUTION
     return score, "High", FALL
 
 # ═══════════════════════════════════════════════════════════════
@@ -1244,7 +1374,7 @@ def render_ticker_detail(symbol: str, years: int):
     col_name, col_price = st.columns([2, 1])
 
     with col_name:
-        meta = " · ".join(filter(None, [d.get("exchange",""), d.get("sector",""), d.get("industry","")]))
+        meta = " · ".join(filter(None, [d.get("exchange", ""), d.get("sector", ""), d.get("industry", "")]))
         if meta:
             st.markdown(
                 f'<div style="font-size:11px;color:{GOLD};letter-spacing:.2em;text-transform:uppercase;margin-bottom:4px;">{meta}</div>',
@@ -1273,19 +1403,25 @@ def render_ticker_detail(symbol: str, years: int):
 
     st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
 
-    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
     pe, ps, pb = d.get("pe"), d.get("ps"), d.get("pb")
     dy, beta, vol = d.get("div_yield") or 0, d.get("beta"), d.get("vol")
 
-    with k1: st.metric("P/E", f"{pe:.1f}×" if pe else "—")
-    with k2: st.metric("P/S", f"{ps:.1f}×" if ps else "—")
-    with k3: st.metric("P/B", f"{pb:.1f}×" if pb else "—")
-    with k4: st.metric("Div. Yield", fmt_pct(dy) if dy else "—")
+    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+    with k1:
+        st.metric("P/E", f"{pe:.1f}×" if pe else "—")
+    with k2:
+        st.metric("P/S", f"{ps:.1f}×" if ps else "—")
+    with k3:
+        st.metric("P/B", f"{pb:.1f}×" if pb else "—")
+    with k4:
+        st.metric("Div. Yield", fmt_pct(dy) if dy else "—")
     with k5:
         d52l_val = d.get("dist_52w_low")
         st.metric("vs 52w Low", f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—")
-    with k6: st.metric("Beta (β)", f"{beta:.2f}" if beta else "—")
-    with k7: st.metric("Volatility", fmt_pct(vol))
+    with k6:
+        st.metric("Beta (β)", f"{beta:.2f}" if beta else "—")
+    with k7:
+        st.metric("Volatility", fmt_pct(vol))
     with k8:
         d52h_val = d.get("dist_52w_high")
         st.metric("vs 52w High", f"{d52h_val*100:.1f}%" if d52h_val is not None else "—")
@@ -1301,7 +1437,11 @@ def render_ticker_detail(symbol: str, years: int):
 
     with col_chart:
         st.markdown('<div class="section-header">Price History</div>', unsafe_allow_html=True)
-        st.plotly_chart(price_chart(prices, symbol, d.get("currency", "USD"), years), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(
+            price_chart(prices, symbol, d.get("currency", "USD"), years),
+            use_container_width=True,
+            config={"displayModeBar": False}
+        )
 
     if col_52w is not None:
         with col_52w:
@@ -1314,20 +1454,33 @@ def render_ticker_detail(symbol: str, years: int):
 
     # Recovery Dashboard
     cycles_df = extract_recovery_cycles(prices, years=max(years, 5))
+
     st.markdown('<div class="section-header" style="margin-top:10px;">Recovery Dashboard</div>', unsafe_allow_html=True)
     st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
 
     top_left, top_right = st.columns([1.45, 1.0])
     with top_left:
-        st.plotly_chart(price_vs_running_peak_chart(prices, years=max(years, 5)), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(
+            price_vs_running_peak_chart(prices, years=max(years, 5)),
+            use_container_width=True,
+            config={"displayModeBar": False}
+        )
     with top_right:
         st.markdown(recovery_summary_html(d, symbol, cycles_df), unsafe_allow_html=True)
 
     bot_left, bot_right = st.columns([1.45, 1.0])
     with bot_left:
-        st.plotly_chart(drawdown_from_peak_chart(prices, years=max(years, 5)), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(
+            drawdown_from_peak_chart(prices, years=max(years, 5)),
+            use_container_width=True,
+            config={"displayModeBar": False}
+        )
     with bot_right:
-        st.plotly_chart(recovery_days_by_cycle_chart(cycles_df), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(
+            recovery_days_by_cycle_chart(cycles_df),
+            use_container_width=True,
+            config={"displayModeBar": False}
+        )
 
     score, grade, color = risk_score(d)
     radar_fig, factors = factor_radar(d, symbol)
@@ -1401,11 +1554,16 @@ def render_ticker_detail(symbol: str, years: int):
             avg_tuw_days = float(cycles_df["time_under_water_days"].mean()) if not cycles_df.empty else None
 
         def _days_ago(n):
-            if n is None: return ""
-            if n == 0: return "today"
-            if n == 1: return "yesterday"
-            if n < 30: return f"{n}d ago"
-            if n < 365: return f"{n//30}mo ago"
+            if n is None:
+                return ""
+            if n == 0:
+                return "today"
+            if n == 1:
+                return "yesterday"
+            if n < 30:
+                return f"{n}d ago"
+            if n < 365:
+                return f"{n//30}mo ago"
             return f"{n//365}y {(n%365)//30}mo ago"
 
         rows = [
@@ -1495,13 +1653,18 @@ def render_comparison(symbols: list[str], years: int):
             "TUW": fmt_pct(d.get("pct_time_under_water")),
             "Avg Rec Days": fmt_num(d.get("avg_recovery_days"), 1),
             "Recovery %": fmt_pct(d.get("recovery_success_ratio")),
-            "Risk Score": f'{grade} ({sc})',
+            "Risk Score": f"{grade} ({sc})",
         })
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
     csv_buf = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
-    st.download_button("⬇ Export Comparison CSV", data=csv_buf, file_name="stock_haus_comparison.csv", mime="text/csv")
+    st.download_button(
+        "⬇ Export Comparison CSV",
+        data=csv_buf,
+        file_name="stock_haus_comparison.csv",
+        mime="text/csv"
+    )
 
 # ═══════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -1569,8 +1732,13 @@ def render_sidebar() -> tuple[list[str], int, str]:
                 st.rerun()
 
         st.markdown(f'<div class="section-header" style="margin-top:24px;">Time Window</div>', unsafe_allow_html=True)
-        yr = st.select_slider("", options=[1, 2, 3, 5, 10], value=st.session_state.get("years", 3),
-                              format_func=lambda x: f"{x}Y", label_visibility="collapsed")
+        yr = st.select_slider(
+            "",
+            options=[1, 2, 3, 5, 10],
+            value=st.session_state.get("years", 3),
+            format_func=lambda x: f"{x}Y",
+            label_visibility="collapsed"
+        )
         st.session_state.years = yr
 
         st.markdown(f"""
@@ -1594,10 +1762,14 @@ def render_sidebar() -> tuple[list[str], int, str]:
 # ═══════════════════════════════════════════════════════════════
 
 def main():
-    if "tickers" not in st.session_state: st.session_state.tickers = ["AAPL"]
-    if "active" not in st.session_state: st.session_state.active = "AAPL"
-    if "view_mode" not in st.session_state: st.session_state.view_mode = "detail"
-    if "years" not in st.session_state: st.session_state.years = 3
+    if "tickers" not in st.session_state:
+        st.session_state.tickers = ["AAPL"]
+    if "active" not in st.session_state:
+        st.session_state.active = "AAPL"
+    if "view_mode" not in st.session_state:
+        st.session_state.view_mode = "detail"
+    if "years" not in st.session_state:
+        st.session_state.years = 3
 
     tickers, years, mode = render_sidebar()
 
