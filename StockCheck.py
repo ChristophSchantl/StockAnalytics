@@ -626,7 +626,7 @@ def _compute_risk(closes: np.ndarray, dates=None) -> dict:
     """
     empty = {
         "vol": None, "downside_vol": None, "mdd": None, "sharpe": None,
-        "ulcer_index": None, "pct_time_under_water": None,
+        "ulcer_index": None, "martin_ratio": None, "pct_time_under_water": None,
         "avg_recovery_days": None, "max_recovery_days": None,
         "median_recovery_days": None, "avg_tuw_days": None,
         "recovery_success_ratio": None, "recovery_efficiency": None,
@@ -711,12 +711,16 @@ def _compute_risk(closes: np.ndarray, dates=None) -> dict:
         except Exception:
             pass
 
+    # Martin Ratio = Annualised Return / Ulcer Index (like Sharpe but uses Ulcer as risk denominator)
+    martin = round(ann_return / (ulcer / 100), 2) if ulcer and ulcer > 0 else None
+
     return {
         "vol": float(ann_vol),
         "downside_vol": downside_vol,
         "mdd": mdd,
         "sharpe": float(sharpe) if sharpe is not None else None,
         "ulcer_index": ulcer,
+        "martin_ratio": martin,
         "pct_time_under_water": tuw,
         "avg_recovery_days": avg_rec,
         "max_recovery_days": max_rec,
@@ -1427,71 +1431,109 @@ def recovery_dashboard_chart(prices: list[dict], symbol: str, years: int = 5) ->
 
 
 def recovery_metrics_html(d: dict, symbol: str) -> str:
-    """Summary card with all recovery KPIs — used in Tab 4."""
+    """Summary card with all recovery KPIs — used in Tab 4.
+    Hover tooltips via HTML title= attribute on each row label.
+    """
     def _fmt_eff(v):
-        """Format recovery_efficiency as readable ratio (e.g. 0.42%/day)."""
-        if v is None:
-            return "—"
+        if v is None: return "—"
         return f"{v*100:.3f}%/day"
 
     def _fmt_days(v):
-        if v is None:
-            return "—"
-        if v < 30:  return f"{v:.0f}d"
+        if v is None: return "—"
+        if v < 30: return f"{v:.0f}d"
         return f"{v/30:.1f}mo  ({v:.0f}d)"
 
+    # (key, label, formatted_value, tooltip_text)
     rows_data = [
-        ("Max Drawdown",         fmt_pct(d.get("mdd"))),
-        ("Ulcer Index",          fmt_num(d.get("ulcer_index"))),
-        ("Time Under Water",     fmt_pct(d.get("pct_time_under_water"))),
-        ("Avg Recovery",         _fmt_days(d.get("avg_recovery_days"))),
-        ("Median Recovery",      _fmt_days(d.get("median_recovery_days"))),
-        ("Max Recovery",         _fmt_days(d.get("max_recovery_days"))),
-        ("Avg TUW Period",       _fmt_days(d.get("avg_tuw_days"))),
-        ("Recovery Success",     fmt_pct(d.get("recovery_success_ratio"))),
-        ("Recovery Efficiency",  _fmt_eff(d.get("recovery_efficiency"))),
-        ("Calmar Ratio",         fmt_num(d.get("calmar"))),
-        ("Downside Volatility",  fmt_pct(d.get("downside_vol"))),
+        ("mdd",
+         "Max Drawdown",
+         fmt_pct(d.get("mdd")),
+         "Größter kumulierter Kursverlust vom Hochpunkt bis zum Tiefpunkt — misst das schlimmste Szenario für einen Investor."),
+        ("ulcer_index",
+         "Ulcer Index",
+         fmt_num(d.get("ulcer_index")),
+         "Ulcer Index (Peter Martin, 1987): Misst Tiefe UND Dauer von Drawdowns — je länger und tiefer ein Portfolio unter Wasser liegt, desto höher der Wert. Besser als reine Volatilität, da nur Verluste bestraft werden. Werte <5 sind gut, >20 signalisieren anhaltenden Stress."),
+        ("martin_ratio",
+         "Martin Ratio",
+         fmt_num(d.get("martin_ratio")),
+         "Martin Ratio = Annualisierte Rendite / Ulcer Index — analoges Konzept zur Sharpe Ratio, jedoch wird statt Volatilität der Ulcer Index als Risikomaß verwendet. Bewertet, wie gut die Rendite den erlebten Drawdown-Stress kompensiert. Höher ist besser; >1.0 gilt als solide."),
+        ("pct_time_under_water",
+         "Time Under Water",
+         fmt_pct(d.get("pct_time_under_water")),
+         "Anteil der Handelstage, an denen der Kurs unter seinem letzten Allzeithoch lag. 40%+ bedeutet, der Investor wartete häufig auf Erholung."),
+        ("avg_recovery_days",
+         "Avg Recovery",
+         _fmt_days(d.get("avg_recovery_days")),
+         "Durchschnittliche Anzahl Tage vom Tiefpunkt bis zur vollständigen Erholung auf den vorherigen Hochpunkt."),
+        ("median_recovery_days",
+         "Median Recovery",
+         _fmt_days(d.get("median_recovery_days")),
+         "Typische Heilungszeit — weniger von Ausreißern beeinflusst als der Durchschnitt."),
+        ("max_recovery_days",
+         "Max Recovery",
+         _fmt_days(d.get("max_recovery_days")),
+         "Längste beobachtete Erholungsphase — misst das Worst-Case-Szenario für Geduld."),
+        ("avg_tuw_days",
+         "Avg TUW Period",
+         _fmt_days(d.get("avg_tuw_days")),
+         "Durchschnittliche Gesamtdauer einer Drawdown-Episode (vom Hochpunkt bis zur vollständigen Erholung)."),
+        ("recovery_success_ratio",
+         "Recovery Success",
+         fmt_pct(d.get("recovery_success_ratio")),
+         "Anteil der Drawdown-Zyklen, die vollständig erholt wurden. <50% bedeutet viele ungelöste Verlustphasen."),
+        ("recovery_efficiency",
+         "Recovery Efficiency",
+         _fmt_eff(d.get("recovery_efficiency")),
+         "Drawdown-Tiefe erholt pro Tag (Drawdown% / Erholungstage). Höher = schnellere Heilung relativ zum Schaden."),
+        ("calmar",
+         "Calmar Ratio",
+         fmt_num(d.get("calmar")),
+         "Calmar Ratio = Annualisierte Rendite / |Max Drawdown| — bewertet die Rendite relativ zum schlimmsten erlebten Verlust. >1.0 gilt als gut."),
+        ("downside_vol",
+         "Downside Volatility",
+         fmt_pct(d.get("downside_vol")),
+         "Standardabweichung nur der negativen Tagesrenditen (annualisiert) — misst das 'schlechte' Risiko ohne positive Schwankungen zu bestrafen."),
     ]
 
-    def _ampel(key, val):
+    ampel_rules = {
+        "mdd":                   [("bad", lambda x: abs(x)>0.55), ("warn", lambda x: abs(x)>0.30), ("good", lambda x: abs(x)<0.15)],
+        "ulcer_index":           [("bad", lambda x: x>20), ("warn", lambda x: x>10), ("good", lambda x: x<5)],
+        "martin_ratio":          [("good", lambda x: x>1.5), ("warn", lambda x: x>0.5), ("bad", lambda x: x<=0.5)],
+        "pct_time_under_water":  [("bad", lambda x: x>0.60), ("warn", lambda x: x>0.40), ("good", lambda x: x<0.25)],
+        "avg_recovery_days":     [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
+        "median_recovery_days":  [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
+        "max_recovery_days":     [("bad", lambda x: x>365), ("warn", lambda x: x>120)],
+        "avg_tuw_days":          [("bad", lambda x: x>200), ("warn", lambda x: x>90)],
+        "recovery_success_ratio":[("bad", lambda x: x<0.40), ("warn", lambda x: x<0.65), ("good", lambda x: x>=0.75)],
+        "recovery_efficiency":   [("good", lambda x: x>0.003), ("warn", lambda x: x>0.001)],
+        "calmar":                [("good", lambda x: x>1.0), ("warn", lambda x: x>0.3), ("bad", lambda x: x<=0.3)],
+        "downside_vol":          [("bad", lambda x: x>0.30), ("warn", lambda x: x>0.18), ("good", lambda x: x<0.12)],
+    }
+
+    def _ampel(key):
         v = d.get(key)
-        if v is None:
-            return ""
-        rules = {
-            "mdd":                   [("bad", lambda x: abs(x)>0.55), ("warn", lambda x: abs(x)>0.30), ("good", lambda x: abs(x)<0.15)],
-            "ulcer_index":           [("bad", lambda x: x>20), ("warn", lambda x: x>10), ("good", lambda x: x<5)],
-            "pct_time_under_water":  [("bad", lambda x: x>0.60), ("warn", lambda x: x>0.40), ("good", lambda x: x<0.25)],
-            "avg_recovery_days":     [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
-            "median_recovery_days":  [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
-            "max_recovery_days":     [("bad", lambda x: x>365), ("warn", lambda x: x>120)],
-            "avg_tuw_days":          [("bad", lambda x: x>200), ("warn", lambda x: x>90)],
-            "recovery_success_ratio":[("bad", lambda x: x<0.40), ("warn", lambda x: x<0.65), ("good", lambda x: x>=0.75)],
-            "recovery_efficiency":   [("good", lambda x: x>0.003), ("warn", lambda x: x>0.001)],
-            "calmar":                [("good", lambda x: x>1.0), ("warn", lambda x: x>0.3), ("bad", lambda x: x<=0.3)],
-            "downside_vol":          [("bad", lambda x: x>0.30), ("warn", lambda x: x>0.18), ("good", lambda x: x<0.12)],
-        }
-        for tone, fn in rules.get(key, []):
+        if v is None: return ""
+        for tone, fn in ampel_rules.get(key, []):
             try:
-                if fn(v):
-                    return _sig(tone) + " "
-            except Exception:
-                pass
+                if fn(v): return _sig(tone) + " "
+            except Exception: pass
         return ""
 
     html_rows = ""
-    for i, (label, value) in enumerate(rows_data):
-        key = list(d.keys())[0]  # placeholder — map by index
-        keys = ["mdd","ulcer_index","pct_time_under_water","avg_recovery_days",
-                "median_recovery_days","max_recovery_days","avg_tuw_days",
-                "recovery_success_ratio","recovery_efficiency","calmar","downside_vol"]
-        sig = _ampel(keys[i], value)
-        bg = f"background:rgba(182,157,95,0.04);" if i % 2 == 0 else ""
+    for i, (key, label, value, tooltip) in enumerate(rows_data):
+        sig = _ampel(key)
+        bg  = f"background:rgba(182,157,95,0.04);" if i % 2 == 0 else ""
+        # ℹ icon with title tooltip
+        info = (
+            f'<span title="{tooltip}" style="cursor:help;margin-left:5px;'
+            f'font-size:10px;color:{GOLD};vertical-align:middle;" >ⓘ</span>'
+        )
         html_rows += (
-            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
             f'padding:7px 12px;border-radius:6px;{bg}">'
-            f'<span style="font-size:12px;color:{INK_MID};font-family:Outfit,sans-serif;">'
-            f'{sig}{label}</span>'
+            f'<span style="font-size:12px;color:{INK_MID};font-family:Outfit,sans-serif;'
+            f'display:flex;align-items:center;">'
+            f'{sig}{label}{info if tooltip else ""}</span>'
             f'<span style="font-size:14px;font-weight:600;color:{INK};font-family:Outfit,sans-serif;">'
             f'{value}</span>'
             f'</div>'
