@@ -2348,6 +2348,8 @@ def render_sidebar() -> tuple[list[str], int, str]:
           <div style="font-family:Outfit,sans-serif;font-size:8px;color:{INK_LIGHT};
                letter-spacing:.28em;text-transform:uppercase;margin-top:2px;">
             Intelligence &amp; Analytics · Live</div>
+          <div style="font-family:Outfit,sans-serif;font-size:8px;color:{GOLD};
+               letter-spacing:.1em;margin-top:4px;">build 2026-03-13-v5 · Martin Ratio ✓</div>
           <div style="height:1px;background:linear-gradient(90deg,{GOLD},{GOLD_PALE},transparent);
                margin-top:12px;"></div>
         </div>
@@ -2455,7 +2457,7 @@ def render_sidebar() -> tuple[list[str], int, str]:
 
 def main():
     # Force-bust stale cache on code deploy (increment version when schema changes)
-    _CACHE_VERSION = "v4"  # bump this when fetch_ticker_data return dict changes
+    _CACHE_VERSION = "v5"  # bump this when fetch_ticker_data return dict changes
     if st.session_state.get("_cache_ver") != _CACHE_VERSION:
         fetch_ticker_data.clear()
         st.session_state["_cache_ver"] = _CACHE_VERSION
