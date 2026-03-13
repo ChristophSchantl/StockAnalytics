@@ -1,12 +1,6 @@
 """
 STOCK · HAUS — Streamlit Edition
 Live Yahoo Finance data via yfinance (server-side, no CORS issues)
-
-Enhanced version:
-- Recovery-/Path-Risk oriented risk model
-- Volatility is treated as secondary signal
-- Drawdown depth + duration + recovery quality are central
-- Integrated Recovery Dashboard
 """
 
 import streamlit as st
@@ -14,6 +8,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 from datetime import datetime, timedelta
 
@@ -29,38 +24,40 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════════════════════════════
-# DESIGN TOKENS
+# DESIGN TOKENS  (Warm stone + gold leaf)
 # ═══════════════════════════════════════════════════════════════
 
-GOLD = "#B69D5F"
-GOLD_DEEP = "#9A8243"
-GOLD_PALE = "#EDE4CC"
-STONE = "#F5F1EB"
-INK = "#1E1E1E"
-INK_MID = "#6E6E6E"
-INK_LIGHT = "#9C9C9C"
-RISE = "#4D7C5B"
-FALL = "#944848"
-CAUTION = "#A08030"
-DEPTH = "#5B6B8A"
-WHITE = "#FFFFFF"
-GRID = "#DDD8CE"
+GOLD       = "#B69D5F"
+GOLD_DEEP  = "#9A8243"
+GOLD_PALE  = "#EDE4CC"
+STONE      = "#F5F1EB"
+INK        = "#1E1E1E"
+INK_MID    = "#6E6E6E"
+INK_LIGHT  = "#9C9C9C"
+RISE       = "#4D7C5B"
+FALL       = "#944848"
+CAUTION    = "#A08030"
+DEPTH      = "#5B6B8A"
+WHITE      = "#FFFFFF"
 
 # ═══════════════════════════════════════════════════════════════
-# GLOBAL CSS
+# GLOBAL CSS  — matches the Maison aesthetic
 # ═══════════════════════════════════════════════════════════════
 
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300&family=Outfit:wght@300;400;500;600&display=swap');
 
+  /* Root */
   .stApp {{ background: {STONE}; }}
   [data-testid="stSidebar"] {{ background: {WHITE}; border-right: 1px solid #DDD8CE; }}
   [data-testid="stSidebar"] * {{ font-family: 'Outfit', sans-serif; }}
 
+  /* Typography overrides */
   h1, h2, h3 {{ font-family: 'Cormorant Garamond', Georgia, serif !important; color: {INK}; }}
   p, span, div {{ font-family: 'Outfit', sans-serif; }}
 
+  /* Metric cards */
   [data-testid="metric-container"] {{
     background: {WHITE};
     border: 1px solid #DDD8CE;
@@ -85,6 +82,7 @@ st.markdown(f"""
     font-weight: 400;
   }}
 
+  /* Tabs */
   .stTabs [data-baseweb="tab-list"] {{
     gap: 0;
     border-bottom: 2px solid {GOLD};
@@ -107,6 +105,7 @@ st.markdown(f"""
     background: transparent !important;
   }}
 
+  /* Buttons */
   .stButton > button {{
     font-family: 'Outfit', sans-serif;
     font-weight: 600;
@@ -125,14 +124,17 @@ st.markdown(f"""
     box-shadow: 0 4px 20px rgba(182,157,95,0.25);
   }}
 
+  /* Data table */
   [data-testid="stDataFrame"] {{ border-radius: 12px; overflow: hidden; }}
 
+  /* Divider with gold gradient */
   .gold-rule {{
     height: 1px;
     background: linear-gradient(90deg, {GOLD}, {GOLD_PALE}, transparent);
     margin: 12px 0 24px 0;
   }}
 
+  /* Section headers */
   .section-header {{
     font-family: 'Outfit', sans-serif;
     font-size: 10px;
@@ -143,6 +145,28 @@ st.markdown(f"""
     margin-bottom: 8px;
   }}
 
+  /* KPI badge */
+  .kpi-badge {{
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-family: 'Outfit', sans-serif;
+    font-weight: 600;
+  }}
+
+  /* Risk gauge */
+  .risk-card {{
+    background: {WHITE};
+    border: 1px solid #DDD8CE;
+    border-radius: 14px;
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }}
+
+  /* Company name hero */
   .hero-name {{
     font-family: 'Cormorant Garamond', Georgia, serif;
     font-size: 38px;
@@ -167,73 +191,43 @@ st.markdown(f"""
     letter-spacing: -0.04em;
     line-height: 1;
   }}
-
-  .summary-card {{
-    background: {WHITE};
-    border: 1px solid #DDD8CE;
-    border-radius: 14px;
-    padding: 20px 24px;
-    min-height: 300px;
-  }}
-  .summary-title {{
-    font-family: 'Outfit', sans-serif;
-    font-size: 14px;
-    letter-spacing: .04em;
-    color: {INK};
-    font-weight: 700;
-    margin-bottom: 18px;
-  }}
-  .summary-row {{
-    display:flex;
-    justify-content:space-between;
-    align-items:baseline;
-    padding:4px 0;
-  }}
-  .summary-label {{
-    font-size:12px;
-    color:{INK_MID};
-    font-family:'Outfit', sans-serif;
-  }}
-  .summary-value {{
-    font-size:14px;
-    color:{INK};
-    font-weight:700;
-    font-family:'Outfit', sans-serif;
-  }}
 </style>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# HELPERS
+# DATA LAYER  — yfinance ≥0.2.38 uses curl_cffi internally.
+# NEVER pass a custom requests.Session — it breaks the auth flow.
+# Security hardening is done via the search endpoint only (requests).
 # ═══════════════════════════════════════════════════════════════
 
 def _search_session() -> requests.Session:
+    """Hardened requests.Session used ONLY for the Yahoo search endpoint."""
     import random
-    ua_pool = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    _UA_POOL = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
         "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
     ]
     session = requests.Session()
     session.headers.update({
-        "User-Agent": random.choice(ua_pool),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
+        "User-Agent"      : random.choice(_UA_POOL),
+        "Accept"          : "application/json, text/plain, */*",
+        "Accept-Language" : "en-US,en;q=0.9",
+        "Accept-Encoding" : "gzip, deflate, br",
+        "DNT"             : "1",
     })
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
-    retry = Retry(
-        total=3,
-        backoff_factor=1.2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
+    retry = Retry(total=3, backoff_factor=1.2,
+                  status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=["GET"])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
 
 def _safe(val):
+    """Return float or None; never NaN."""
     try:
         v = float(val)
         return None if (np.isnan(v) or np.isinf(v)) else v
@@ -241,292 +235,42 @@ def _safe(val):
         return None
 
 def _row(df: pd.DataFrame, *keys):
+    """Extract first matching row label from a DataFrame, return most-recent value."""
     for k in keys:
         for label in df.index:
             if k.lower() in str(label).lower():
                 row = df.loc[label]
+                # take the most recent non-null column
                 for col in df.columns:
                     v = _safe(row[col])
                     if v is not None:
                         return v
     return None
 
-def fmt_num(v, digits=2):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "—"
-    return f"{v:,.{digits}f}"
-
-def fmt_pct(v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "—"
-    return f"{v*100:.2f}%"
-
-def fmt_big(v, cur="$"):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "—"
-    a = abs(v)
-    if a >= 1e12:
-        return f"{cur}{v/1e12:.2f}T"
-    if a >= 1e9:
-        return f"{cur}{v/1e9:.2f}B"
-    if a >= 1e6:
-        return f"{cur}{v/1e6:.2f}M"
-    return f"{cur}{v:,.0f}"
-
-def cur_sym(c: str) -> str:
-    return {
-        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CHF": "Fr.",
-        "HKD": "HK$", "CAD": "C$", "AUD": "A$", "INR": "₹", "CNY": "¥"
-    }.get(c, c)
-
-def _sig(tone):
-    return {"good": "🟢", "bad": "🔴", "warn": "🟡", None: ""}[tone]
-
-def _render_table(rows: list[dict]):
-    df = pd.DataFrame(rows)
-    df = df[df["Value"] != "—"]
-
-    if "Signal" in df.columns and "Metric" in df.columns:
-        df["Metric"] = df["Signal"].fillna("") + "  " + df["Metric"].fillna("")
-        df = df.drop(columns=["Signal"])
-
-    st.dataframe(
-        df,
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "Metric": st.column_config.TextColumn("Metric", width="medium"),
-            "Value": st.column_config.TextColumn("Value", width="small"),
-            "Comment": st.column_config.TextColumn("Assessment"),
-        },
-    )
-
-def _base_layout(height=260):
-    return dict(
-        font_family="Outfit, sans-serif",
-        paper_bgcolor=STONE,
-        plot_bgcolor=STONE,
-        margin=dict(l=10, r=10, t=40, b=20),
-        height=height,
-        xaxis=dict(
-            showgrid=False,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            zeroline=False,
-            showline=False
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor=GRID,
-            gridwidth=1,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            zeroline=False,
-            showline=False
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            x=0,
-            font=dict(size=11, color=INK_MID),
-        ),
-    )
-
-# ═══════════════════════════════════════════════════════════════
-# RECOVERY CORE
-# ═══════════════════════════════════════════════════════════════
-
-def extract_recovery_cycles_from_closes(closes: np.ndarray, dates) -> pd.DataFrame:
-    if closes is None or len(closes) < 3 or dates is None or len(dates) != len(closes):
-        return pd.DataFrame()
-
-    closes = np.asarray(closes, dtype=float)
-    dates = pd.to_datetime(pd.Index(dates))
-
-    peaks = np.maximum.accumulate(closes)
-    drawdowns = (closes - peaks) / peaks
-    underwater = drawdowns < 0
-
-    segments = []
-    in_seg = False
-    start = None
-
-    for i, uw in enumerate(underwater):
-        if uw and not in_seg:
-            in_seg = True
-            start = i
-        elif not uw and in_seg:
-            segments.append((start, i - 1, i))
-            in_seg = False
-            start = None
-
-    if in_seg and start is not None:
-        segments.append((start, len(closes) - 1, None))
-
-    cycles = []
-
-    for seg_start, seg_end, recovery_idx in segments:
-        peak_idx = max(seg_start - 1, 0)
-        peak_price = closes[peak_idx]
-
-        segment_prices = closes[seg_start:seg_end + 1]
-        if len(segment_prices) == 0:
-            continue
-
-        rel_trough_idx = int(np.argmin(segment_prices))
-        trough_idx = seg_start + rel_trough_idx
-        trough_price = closes[trough_idx]
-        dd_depth = (trough_price - peak_price) / peak_price if peak_price > 0 else np.nan
-
-        peak_date = pd.Timestamp(dates[peak_idx])
-        trough_date = pd.Timestamp(dates[trough_idx])
-
-        if recovery_idx is not None:
-            recovery_date = pd.Timestamp(dates[recovery_idx])
-            days_to_recover = int((recovery_date - trough_date).days)
-            time_under_water = int((recovery_date - peak_date).days)
-            recovered = True
-            recovery_efficiency = abs(dd_depth) / days_to_recover if days_to_recover > 0 else np.nan
-        else:
-            recovery_date = pd.NaT
-            days_to_recover = np.nan
-            time_under_water = int((pd.Timestamp(dates[-1]) - peak_date).days)
-            recovered = False
-            recovery_efficiency = np.nan
-
-        cycles.append({
-            "peak_date": peak_date,
-            "peak_price": peak_price,
-            "trough_date": trough_date,
-            "trough_price": trough_price,
-            "recovery_date": recovery_date,
-            "drawdown_depth_pct": dd_depth * 100,
-            "days_to_trough": int((trough_date - peak_date).days),
-            "days_to_recover": days_to_recover,
-            "time_under_water_days": time_under_water,
-            "recovered": recovered,
-            "recovery_efficiency": recovery_efficiency,
-        })
-
-    if not cycles:
-        return pd.DataFrame()
-
-    return pd.DataFrame(cycles).sort_values("peak_date").reset_index(drop=True)
-
-def extract_recovery_cycles(prices: list[dict], years: int = 10) -> pd.DataFrame:
-    df = _prices_to_df(prices, years)
-    if df.empty:
-        return pd.DataFrame()
-
-    return extract_recovery_cycles_from_closes(
-        df["price"].astype(float).values,
-        pd.to_datetime(df["date"]).values
-    )
-
-def _empty_risk_dict() -> dict:
-    return {
-        "vol": None,
-        "downside_vol": None,
-        "mdd": None,
-        "sharpe": None,
-        "ulcer_index": None,
-        "pct_time_under_water": None,
-        "avg_recovery_days": None,
-        "max_recovery_days": None,
-        "recovery_success_ratio": None,
-        "recovery_efficiency": None,
-    }
-
-def _compute_risk(closes: np.ndarray, dates=None) -> dict:
-    if closes is None or len(closes) < 60:
-        return _empty_risk_dict()
-
-    closes = np.asarray(closes, dtype=float)
-    closes = closes[np.isfinite(closes) & (closes > 0)]
-
-    if len(closes) < 60:
-        return _empty_risk_dict()
-
-    log_ret = np.diff(np.log(closes))
-    if len(log_ret) < 20:
-        return _empty_risk_dict()
-
-    daily_vol = float(np.std(log_ret))
-    ann_vol = daily_vol * np.sqrt(252)
-
-    downside = log_ret[log_ret < 0]
-    downside_vol = float(np.std(downside) * np.sqrt(252)) if len(downside) > 5 else None
-
-    ann_return = float(np.mean(log_ret) * 252)
-    sharpe = (ann_return - 0.04) / ann_vol if ann_vol > 0 else None
-
-    peaks = np.maximum.accumulate(closes)
-    drawdowns = (closes - peaks) / peaks
-
-    mdd = float(np.min(drawdowns))
-    ulcer_index = float(np.sqrt(np.mean((drawdowns * 100.0) ** 2)))
-    pct_time_under_water = float(np.mean(drawdowns < 0))
-
-    avg_recovery_days = None
-    max_recovery_days = None
-    recovery_success_ratio = None
-    recovery_efficiency = None
-
-    if dates is not None and len(dates) == len(closes):
-        cycles_df = extract_recovery_cycles_from_closes(closes, dates)
-        if not cycles_df.empty:
-            recovered = cycles_df[cycles_df["recovered"] == True]
-            avg_recovery_days = float(recovered["days_to_recover"].mean()) if not recovered.empty else None
-            max_recovery_days = int(recovered["days_to_recover"].max()) if not recovered.empty else None
-            recovery_success_ratio = float(recovered.shape[0] / cycles_df.shape[0]) if cycles_df.shape[0] > 0 else None
-            recovery_efficiency = float(recovered["recovery_efficiency"].mean()) if not recovered.empty else None
-
-    return {
-        "vol": float(ann_vol),
-        "downside_vol": downside_vol,
-        "mdd": float(mdd),
-        "sharpe": float(sharpe) if sharpe is not None else None,
-        "ulcer_index": ulcer_index,
-        "pct_time_under_water": pct_time_under_water,
-        "avg_recovery_days": avg_recovery_days,
-        "max_recovery_days": max_recovery_days,
-        "recovery_success_ratio": recovery_success_ratio,
-        "recovery_efficiency": recovery_efficiency,
-    }
-
-def _altman_z_v2(ta, retained, ebitda_val, mkt_cap, revenue, cur_assets, cur_liab, total_liab):
-    try:
-        if not ta or ta <= 0 or not mkt_cap or not revenue:
-            return None
-        wc = (cur_assets or 0) - (cur_liab or 0)
-        ebit = (ebitda_val or 0) * 0.85
-        tl = total_liab or 1
-        A = wc / ta
-        B = (retained or 0) / ta
-        C = ebit / ta
-        D = mkt_cap / tl
-        E = revenue / ta
-        z = 1.2 * A + 1.4 * B + 3.3 * C + 0.6 * D + 1.0 * E
-        return round(z, 2) if 0 < z < 50 else None
-    except Exception:
-        return None
-
-# ═══════════════════════════════════════════════════════════════
-# DATA FETCH
-# ═══════════════════════════════════════════════════════════════
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker_data(symbol: str) -> dict:
+    """
+    Robust multi-endpoint fetch for yfinance ≥0.2.38.
+    tk.info is used ONLY for metadata (name/sector/bio).
+    ALL financial ratios are computed from first principles:
+      fast_info   → price, mkt_cap, currency, shares
+      income_stmt → revenue, net_income, EBITDA, EPS
+      balance_sheet → equity, debt, liquidity
+      history     → price series, beta (vs SPY), volatility, Sharpe, MDD
+    """
     try:
         tk = yf.Ticker(symbol)
 
-        fi = tk.fast_info
-        fi_price = _safe(getattr(fi, "last_price", None))
-        fi_prev = _safe(getattr(fi, "previous_close", None))
-        fi_mktcap = _safe(getattr(fi, "market_cap", None))
+        # ── 1. fast_info — price / cap (always reliable) ────────
+        fi          = tk.fast_info
+        fi_price    = _safe(getattr(fi, "last_price",      None))
+        fi_prev     = _safe(getattr(fi, "previous_close",  None))
+        fi_mktcap   = _safe(getattr(fi, "market_cap",      None))
         fi_currency = (getattr(fi, "currency", None) or "USD")
-        fi_shares = _safe(getattr(fi, "shares", None))
-        fi_exchange = (getattr(fi, "exchange", None) or "")
+        fi_shares   = _safe(getattr(fi, "shares",          None))
+        fi_exchange = (getattr(fi, "exchange",  None) or "")
 
+        # ── 2. info — metadata only (name, sector, bio) ─────────
         info = {}
         try:
             info = tk.info or {}
@@ -535,86 +279,82 @@ def fetch_ticker_data(symbol: str) -> dict:
         except Exception:
             info = {}
 
-        bad_names = {
-            "EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY",
-            "FUTURE", "OPTION", symbol.upper()
-        }
+        # Name: strip generic stubs yfinance returns
+        _BAD_NAMES = {"EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY",
+                      "FUTURE", "OPTION", symbol.upper()}
         raw_name = (info.get("longName") or info.get("shortName") or "").strip()
-        name = raw_name if raw_name and raw_name.upper() not in bad_names else symbol.upper()
+        name = raw_name if raw_name and raw_name.upper() not in _BAD_NAMES else symbol.upper()
 
+        # If info returned a stub, try yf.Search for proper company name
         if name == symbol.upper():
             try:
                 results = yf.Search(symbol, max_results=1).quotes
                 if results:
                     q = results[0]
                     candidate = q.get("longname") or q.get("shortname") or ""
-                    if candidate and candidate.upper() not in bad_names:
+                    if candidate and candidate.upper() not in _BAD_NAMES:
                         name = candidate
             except Exception:
                 pass
 
-        currency = info.get("currency") or fi_currency
-        sector = info.get("sector") or "—"
-        industry = info.get("industry") or "—"
-        country = info.get("country") or "—"
-        exchange = info.get("exchange") or fi_exchange or "—"
-        bio = info.get("longBusinessSummary") or ""
-        employees = info.get("fullTimeEmployees")
+        currency   = info.get("currency")  or fi_currency
+        sector     = info.get("sector")    or "—"
+        industry   = info.get("industry")  or "—"
+        country    = info.get("country")   or "—"
+        exchange   = info.get("exchange")  or fi_exchange or "—"
+        bio        = info.get("longBusinessSummary") or ""
+        employees  = info.get("fullTimeEmployees")
 
-        price = fi_price or fi_prev or _safe(info.get("regularMarketPrice"))
+        # Price & cap — fast_info wins over info
+        price   = fi_price or fi_prev or _safe(info.get("regularMarketPrice"))
         mkt_cap = fi_mktcap or _safe(info.get("marketCap"))
-        shares = fi_shares or _safe(info.get("sharesOutstanding"))
+        shares  = fi_shares or _safe(info.get("sharesOutstanding"))
 
+        # ── 3. Income statement ──────────────────────────────────
         revenue = net_income = ebitda_val = gross_profit = None
         interest_exp = None
         try:
             inc = tk.income_stmt
             if inc is not None and not inc.empty:
-                revenue = _row(inc, "Total Revenue")
-                net_income = _row(inc, "Net Income")
+                revenue      = _row(inc, "Total Revenue")
+                net_income   = _row(inc, "Net Income")
                 gross_profit = _row(inc, "Gross Profit")
-                ebitda_val = _row(inc, "EBITDA", "Normalized EBITDA")
+                ebitda_val   = _row(inc, "EBITDA", "Normalized EBITDA")
                 interest_exp = _row(inc, "Interest Expense")
                 if ebitda_val is None:
                     ebit = _row(inc, "EBIT", "Operating Income")
-                    da = _row(
-                        inc,
-                        "Depreciation",
-                        "Reconciled Depreciation",
-                        "Depreciation And Amortization"
-                    )
+                    da   = _row(inc, "Depreciation", "Reconciled Depreciation",
+                                "Depreciation And Amortization")
                     if ebit is not None and da is not None:
                         ebitda_val = ebit + abs(da)
         except Exception:
             pass
 
+        # ── 4. Balance sheet ─────────────────────────────────────
         total_assets = total_liab = retained = None
         cur_assets = cur_liab = total_debt = equity = None
         try:
             bs = tk.balance_sheet
             if bs is not None and not bs.empty:
                 total_assets = _row(bs, "Total Assets")
-                total_liab = _row(bs, "Total Liab", "Total Liabilities Net Minority Interest")
-                retained = _row(bs, "Retained Earnings")
-                cur_assets = _row(bs, "Current Assets", "Total Current Assets")
-                cur_liab = _row(bs, "Current Liabilities", "Total Current Liabilities")
-                total_debt = _row(bs, "Total Debt", "Long Term Debt")
-                equity = _row(
-                    bs,
-                    "Stockholders Equity",
-                    "Total Stockholder Equity",
-                    "Common Stock Equity",
-                    "Total Equity Gross Minority Interest"
-                )
+                total_liab   = _row(bs, "Total Liab", "Total Liabilities Net Minority Interest")
+                retained     = _row(bs, "Retained Earnings")
+                cur_assets   = _row(bs, "Current Assets", "Total Current Assets")
+                cur_liab     = _row(bs, "Current Liabilities", "Total Current Liabilities")
+                total_debt   = _row(bs, "Total Debt", "Long Term Debt")
+                equity       = _row(bs, "Stockholders Equity", "Total Stockholder Equity",
+                                    "Common Stock Equity", "Total Equity Gross Minority Interest")
         except Exception:
             pass
 
+        # ── 5. Price history + beta + risk ───────────────────────
         prices = []
-        hist_close = np.array([])
-        hist_dates = pd.Index([])
+        hist_close    = np.array([])
+        hist_dates    = []
+        hist_returns  = np.array([])
 
         try:
-            hist = tk.history(period="10y", auto_adjust=True, actions=False, timeout=20)
+            hist = tk.history(period="5y", auto_adjust=True, actions=False, timeout=20)
             if hist is not None and not hist.empty:
                 hist = hist[["Close"]].dropna()
                 hist.index = pd.to_datetime(hist.index).tz_localize(None)
@@ -626,21 +366,22 @@ def fetch_ticker_data(symbol: str) -> dict:
                     {"date": idx.strftime("%Y-%m-%d"), "price": round(float(v), 2)}
                     for idx, v in zip(hist_dates, hist_close)
                 ]
+                if len(hist_close) > 1:
+                    hist_returns = np.diff(np.log(hist_close[hist_close > 0]))
         except Exception:
             pass
 
-        hist_returns = np.array([])
-        if len(hist_close) > 1:
-            hist_returns = np.diff(np.log(hist_close[hist_close > 0]))
-
+        # Beta: regress stock returns vs SPY over same window
         beta = _safe(info.get("beta"))
         if beta is None and len(hist_returns) > 60:
             try:
-                spy = yf.Ticker("^GSPC").history(period="5y", auto_adjust=True, actions=False, timeout=15)
+                spy = yf.Ticker("^GSPC").history(period="5y", auto_adjust=True,
+                                                  actions=False, timeout=15)
                 if spy is not None and not spy.empty:
                     spy = spy[["Close"]].dropna()
                     spy.index = pd.to_datetime(spy.index).tz_localize(None)
                     spy_ret = np.diff(np.log(spy["Close"].values.astype(float)))
+                    # Align lengths
                     n = min(len(hist_returns), len(spy_ret))
                     if n > 60:
                         x, y = spy_ret[-n:], hist_returns[-n:]
@@ -651,63 +392,79 @@ def fetch_ticker_data(symbol: str) -> dict:
             except Exception:
                 pass
 
+        # ── 6. Compute all ratios from first principles ──────────
+        # P/E  = market_cap / net_income
         pe = _safe(info.get("trailingPE"))
         if pe is None and mkt_cap and net_income and net_income > 0:
             pe = round(mkt_cap / net_income, 2)
 
+        # P/S  = market_cap / revenue
         ps = _safe(info.get("priceToSalesTrailing12Months"))
         if ps is None and mkt_cap and revenue and revenue > 0:
             ps = round(mkt_cap / revenue, 2)
 
+        # P/B  = market_cap / book_equity
         pb = _safe(info.get("priceToBook"))
         if pb is None and mkt_cap and equity and equity > 0:
             pb = round(mkt_cap / equity, 2)
 
+        # EV   = mkt_cap + total_debt - cash (simplified)
         ev = _safe(info.get("enterpriseValue"))
         if ev is None and mkt_cap and total_debt:
             ev = mkt_cap + (total_debt or 0)
 
-        ev_rev = _safe(info.get("enterpriseToRevenue"))
+        # EV/Revenue, EV/EBITDA
+        ev_rev    = _safe(info.get("enterpriseToRevenue"))
         ev_ebitda = _safe(info.get("enterpriseToEbitda"))
         if ev_rev is None and ev and revenue and revenue > 0:
             ev_rev = round(ev / revenue, 2)
         if ev_ebitda is None and ev and ebitda_val and ebitda_val > 0:
             ev_ebitda = round(ev / ebitda_val, 2)
 
+        # Profit margin
         profit_mg = _safe(info.get("profitMargins"))
         if profit_mg is None and net_income and revenue and revenue > 0:
             profit_mg = net_income / revenue
 
+        # ROE  = net_income / equity
         roe = _safe(info.get("returnOnEquity"))
         if roe is None and net_income and equity and equity > 0:
             roe = net_income / equity
 
+        # ROA  = net_income / total_assets
         roa = _safe(info.get("returnOnAssets"))
         if roa is None and net_income and total_assets and total_assets > 0:
             roa = net_income / total_assets
 
+        # D/E  = total_debt / equity
         debt_eq = _safe(info.get("debtToEquity"))
         if debt_eq is not None:
-            debt_eq /= 100
+            debt_eq /= 100   # Yahoo returns ×100
         elif total_debt and equity and equity != 0:
             debt_eq = total_debt / equity
 
+        # Liquidity ratios
         cur_ratio = _safe(info.get("currentRatio"))
         if cur_ratio is None and cur_assets and cur_liab and cur_liab != 0:
             cur_ratio = cur_assets / cur_liab
 
         quick_r = _safe(info.get("quickRatio"))
-        if quick_r is None and cur_assets and cur_liab and cur_liab != 0:
-            quick_r = cur_assets / cur_liab
+        # No fallback: Quick Ratio needs inventory data (Current Assets - Inventory).
+        # Without inventory, computing it yields the same as Current Ratio → misleading.
 
+        # Interest coverage
         ic = None
         if ebitda_val and interest_exp and abs(interest_exp) > 0:
             ic = ebitda_val / abs(interest_exp)
 
+        # Dividends
         div_yield = _safe(info.get("dividendYield")) or 0.0
+
+        # Validate info yield — Yahoo sometimes gives raw value needing /100
         if div_yield and div_yield > 1.0:
             div_yield = div_yield / 100
 
+        # Fallback: compute from actual dividend history (last 12 months only)
         if div_yield == 0.0:
             try:
                 divs = tk.dividends
@@ -717,105 +474,237 @@ def fetch_ticker_data(symbol: str) -> dict:
                     last_year = divs[divs.index >= cutoff]
                     if not last_year.empty:
                         annual_div = float(last_year.sum())
-                        div_yield = annual_div / price
+                        div_yield  = annual_div / price
             except Exception:
                 pass
 
+        # Final sanity cap — yield >25% is almost certainly a data error
         if div_yield and div_yield > 0.25:
             div_yield = 0.0
 
         payout = _safe(info.get("payoutRatio")) or 0.0
 
-        zscore = _altman_z_v2(
-            total_assets, retained, ebitda_val, mkt_cap,
-            revenue, cur_assets, cur_liab, total_liab
-        )
-        risk = _compute_risk(hist_close, hist_dates if len(hist_dates) == len(hist_close) else None)
+        # Altman Z-Score & risk
+        zscore = _altman_z_v2(total_assets, retained, ebitda_val, mkt_cap,
+                               revenue, cur_assets, cur_liab, total_liab)
+        risk   = _compute_risk(hist_close, hist_dates if len(hist_dates) == len(hist_close) else None)
 
+        # ── 6b. 52-week high / low distance ──────────────────────
         w52_low = w52_high = dist_52w_low = dist_52w_high = None
         w52_low_date = w52_high_date = None
         w52_low_days = w52_high_days = None
         try:
             if len(hist_close) >= 20:
                 window_closes = hist_close[-252:] if len(hist_close) >= 252 else hist_close
-                window_dates = hist_dates[-252:] if len(hist_dates) >= 252 else hist_dates
+                window_dates  = hist_dates[-252:]  if len(hist_dates)  >= 252 else hist_dates
 
-                low_idx = int(np.argmin(window_closes))
+                low_idx  = int(np.argmin(window_closes))
                 high_idx = int(np.argmax(window_closes))
 
-                w52_low = float(window_closes[low_idx])
+                w52_low  = float(window_closes[low_idx])
                 w52_high = float(window_closes[high_idx])
 
-                w52_low_date = window_dates[low_idx]
+                w52_low_date  = window_dates[low_idx]
                 w52_high_date = window_dates[high_idx]
 
                 today = pd.Timestamp.now().normalize()
-                w52_low_days = int((today - pd.Timestamp(w52_low_date)).days)
+                w52_low_days  = int((today - pd.Timestamp(w52_low_date)).days)
                 w52_high_days = int((today - pd.Timestamp(w52_high_date)).days)
 
                 if price and w52_low > 0:
-                    dist_52w_low = (price - w52_low) / w52_low
+                    dist_52w_low  = (price - w52_low)  / w52_low
                 if price and w52_high > 0:
                     dist_52w_high = (price - w52_high) / w52_high
         except Exception:
             pass
 
         return {
-            "symbol": symbol,
-            "name": name,
-            "sector": sector,
-            "industry": industry,
-            "country": country,
-            "exchange": exchange,
-            "currency": currency,
-            "employees": employees,
-            "bio": bio,
-            "price": price,
-            "mkt_cap": mkt_cap,
-            "shares": shares,
-            "pe": pe,
-            "ps": ps,
-            "pb": pb,
-            "ev": ev,
-            "ev_rev": ev_rev,
-            "ev_ebitda": ev_ebitda,
+            "symbol"       : symbol,
+            "name"         : name,
+            "sector"       : sector,
+            "industry"     : industry,
+            "country"      : country,
+            "exchange"     : exchange,
+            "currency"     : currency,
+            "employees"    : employees,
+            "bio"          : bio,
+            "price"        : price,
+            "mkt_cap"      : mkt_cap,
+            "shares"       : shares,
+            "pe"           : pe,
+            "ps"           : ps,
+            "pb"           : pb,
+            "ev"           : ev,
+            "ev_rev"       : ev_rev,
+            "ev_ebitda"    : ev_ebitda,
             "profit_margin": profit_mg,
-            "roa": roa,
-            "roe": roe,
-            "revenue": revenue,
-            "net_income": net_income,
-            "ebitda": ebitda_val,
-            "gross_profit": gross_profit,
-            "div_yield": div_yield,
-            "payout": payout,
-            "beta": beta,
-            "ic": ic,
-            "debt_eq": debt_eq,
+            "roa"          : roa,
+            "roe"          : roe,
+            "revenue"      : revenue,
+            "net_income"   : net_income,
+            "ebitda"       : ebitda_val,
+            "gross_profit" : gross_profit,
+            "div_yield"    : div_yield,
+            "payout"       : payout,
+            "beta"         : beta,
+            "ic"           : ic,
+            "debt_eq"      : debt_eq,
             "current_ratio": cur_ratio,
-            "quick_ratio": quick_r,
-            "zscore": zscore,
-            **risk,
-            "w52_low": w52_low,
-            "w52_high": w52_high,
-            "w52_low_date": w52_low_date.strftime("%Y-%m-%d") if w52_low_date is not None else None,
-            "w52_high_date": w52_high_date.strftime("%Y-%m-%d") if w52_high_date is not None else None,
-            "w52_low_days": w52_low_days,
-            "w52_high_days": w52_high_days,
-            "dist_52w_low": dist_52w_low,
-            "dist_52w_high": dist_52w_high,
-            "prices": prices,
+            "quick_ratio"  : quick_r,
+            "zscore"            : zscore,
+            **risk,   # includes vol, downside_vol, mdd, sharpe, ulcer_index,
+                      # pct_time_under_water, avg/max/median_recovery_days,
+                      # avg_tuw_days, recovery_success_ratio, recovery_efficiency, calmar
+            "w52_low"       : w52_low,
+            "w52_high"      : w52_high,
+            "w52_low_date"  : w52_low_date.strftime("%Y-%m-%d")  if w52_low_date  else None,
+            "w52_high_date" : w52_high_date.strftime("%Y-%m-%d") if w52_high_date else None,
+            "w52_low_days"  : w52_low_days,
+            "w52_high_days" : w52_high_days,
+            "dist_52w_low"  : dist_52w_low,
+            "dist_52w_high" : dist_52w_high,
+            "prices"       : prices,
         }
-
     except Exception as e:
         return {"symbol": symbol, "error": str(e), "prices": []}
 
+def _compute_risk(closes: np.ndarray, dates=None) -> dict:
+    """
+    Full risk model: vol, MDD, Sharpe + recovery-path metrics.
+    Recovery metrics require dates (pd.DatetimeIndex same length as closes).
+    """
+    empty = {
+        "vol": None, "downside_vol": None, "mdd": None, "sharpe": None,
+        "ulcer_index": None, "pct_time_under_water": None,
+        "avg_recovery_days": None, "max_recovery_days": None,
+        "median_recovery_days": None, "avg_tuw_days": None,
+        "recovery_success_ratio": None, "recovery_efficiency": None,
+        "calmar": None,
+    }
+    if closes is None or len(closes) < 60:
+        return empty
+    closes = np.asarray(closes, dtype=float)
+    closes = closes[np.isfinite(closes) & (closes > 0)]
+    if len(closes) < 60:
+        return empty
+
+    log_ret    = np.diff(np.log(closes))
+    daily_vol  = float(np.std(log_ret))
+    ann_vol    = daily_vol * np.sqrt(252)
+    ann_return = float(np.mean(log_ret)) * 252
+    sharpe     = (ann_return - 0.04) / ann_vol if ann_vol > 0 else None
+
+    # Downside vol
+    down_rets   = log_ret[log_ret < 0]
+    downside_vol = float(np.std(down_rets) * np.sqrt(252)) if len(down_rets) > 5 else None
+
+    # MDD + Ulcer Index + Time Under Water
+    peaks      = np.maximum.accumulate(closes)
+    dds        = (closes - peaks) / peaks          # drawdown series (≤0)
+    mdd        = float(np.min(dds))
+    ulcer      = float(np.sqrt(np.mean((dds * 100) ** 2)))
+    tuw        = float(np.mean(dds < 0))
+
+    # Calmar
+    calmar = round(ann_return / abs(mdd), 2) if mdd and abs(mdd) > 0.001 else None
+
+    # Recovery cycles (only if dates provided)
+    avg_rec = max_rec = median_rec = avg_tuw = rec_success = rec_eff = None
+    if dates is not None and len(dates) == len(closes):
+        try:
+            dates_ts = pd.to_datetime(pd.Index(dates)).tz_localize(None)
+            underwater = dds < 0
+            cycles, in_seg, start = [], False, None
+            for i, uw in enumerate(underwater):
+                if uw and not in_seg:
+                    in_seg, start = True, i
+                elif not uw and in_seg:
+                    cycles.append((start, i - 1, i))
+                    in_seg, start = False, None
+            if in_seg and start is not None:
+                cycles.append((start, len(closes) - 1, None))
+
+            rows = []
+            for seg_s, seg_e, rec_i in cycles:
+                pk_i = max(seg_s - 1, 0)
+                seg  = closes[seg_s:seg_e + 1]
+                if not len(seg):
+                    continue
+                tr_i  = seg_s + int(np.argmin(seg))
+                depth = float(dds[tr_i])
+                pk_dt = pd.Timestamp(dates_ts[pk_i])
+                tr_dt = pd.Timestamp(dates_ts[tr_i])
+                if rec_i is not None:
+                    rc_dt   = pd.Timestamp(dates_ts[rec_i])
+                    d2rec   = int((rc_dt - tr_dt).days)
+                    tuw_tot = int((rc_dt - pk_dt).days)
+                    recovered = True
+                    eff = abs(depth) / d2rec if d2rec > 0 else None
+                else:
+                    d2rec = tuw_tot = None
+                    recovered = False
+                    eff = None
+                rows.append({"d2rec": d2rec, "tuw": tuw_tot,
+                             "recovered": recovered, "eff": eff})
+
+            if rows:
+                df_c = pd.DataFrame(rows)
+                rec  = df_c[df_c["recovered"]]
+                avg_rec    = float(rec["d2rec"].mean())      if not rec.empty else None
+                max_rec    = int(rec["d2rec"].max())         if not rec.empty else None
+                median_rec = float(rec["d2rec"].median())    if not rec.empty else None
+                avg_tuw    = float(df_c["tuw"].dropna().mean()) if not df_c.empty else None
+                rec_success = float(len(rec) / len(df_c))   if len(df_c) > 0 else None
+                eff_vals   = rec["eff"].dropna()
+                rec_eff    = float(eff_vals.mean()) if not eff_vals.empty else None
+        except Exception:
+            pass
+
+    return {
+        "vol": float(ann_vol),
+        "downside_vol": downside_vol,
+        "mdd": mdd,
+        "sharpe": float(sharpe) if sharpe is not None else None,
+        "ulcer_index": ulcer,
+        "pct_time_under_water": tuw,
+        "avg_recovery_days": avg_rec,
+        "max_recovery_days": max_rec,
+        "median_recovery_days": median_rec,
+        "avg_tuw_days": avg_tuw,
+        "recovery_success_ratio": rec_success,
+        "recovery_efficiency": rec_eff,
+        "calmar": calmar,
+    }
+
+def _altman_z_v2(ta, retained, ebitda_val, mkt_cap, revenue, cur_assets, cur_liab, total_liab):
+    """Altman Z-Score from explicit balance sheet / income statement values."""
+    try:
+        if not ta or ta <= 0 or not mkt_cap or not revenue:
+            return None
+        wc   = (cur_assets or 0) - (cur_liab or 0)
+        ebit = (ebitda_val or 0) * 0.85
+        tl   = total_liab or 1
+        A = wc / ta
+        B = (retained or 0) / ta
+        C = ebit / ta
+        D = mkt_cap / tl
+        E = revenue / ta
+        z = 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
+        return round(z, 2) if 0 < z < 50 else None
+    except Exception:
+        return None
+
 @st.cache_data(ttl=300, show_spinner=False)
 def search_tickers(query: str) -> list[dict]:
+    """Live ticker search via Yahoo Finance query endpoint (uses requests, not yfinance)."""
     if len(query) < 1:
         return []
     try:
         session = _search_session()
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=8&newsCount=0&listsCount=0"
+        url = (
+            f"https://query2.finance.yahoo.com/v1/finance/search"
+            f"?q={query}&quotesCount=8&newsCount=0&listsCount=0"
+        )
         r = session.get(url, timeout=8)
         r.raise_for_status()
         return [
@@ -831,8 +720,56 @@ def search_tickers(query: str) -> list[dict]:
         return []
 
 # ═══════════════════════════════════════════════════════════════
-# CHARTS
+# FORMATTING HELPERS
 # ═══════════════════════════════════════════════════════════════
+
+def fmt_num(v, digits=2):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    return f"{v:,.{digits}f}"
+
+def fmt_pct(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    return f"{v*100:.2f}%"
+
+def fmt_big(v, cur="$"):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    a = abs(v)
+    if a >= 1e12: return f"{cur}{v/1e12:.2f}T"
+    if a >= 1e9:  return f"{cur}{v/1e9:.2f}B"
+    if a >= 1e6:  return f"{cur}{v/1e6:.2f}M"
+    return f"{cur}{v:,.0f}"
+
+def cur_sym(c: str) -> str:
+    return {"USD":"$","EUR":"€","GBP":"£","JPY":"¥","CHF":"Fr.",
+            "HKD":"HK$","CAD":"C$","AUD":"A$","INR":"₹","CNY":"¥"}.get(c, c)
+
+def delta_color(v, good_above=None, bad_above=None):
+    """Return Streamlit delta_color string."""
+    if v is None: return "off"
+    if good_above is not None and v > good_above: return "normal"
+    if bad_above  is not None and v > bad_above:  return "inverse"
+    return "off"
+
+# ═══════════════════════════════════════════════════════════════
+# CHART BUILDERS  (Plotly — Maison palette)
+# ═══════════════════════════════════════════════════════════════
+
+_PLOTLY_LAYOUT = dict(
+    font_family="Outfit, sans-serif",
+    paper_bgcolor=STONE,
+    plot_bgcolor=STONE,
+    margin=dict(l=0, r=0, t=24, b=0),
+    xaxis=dict(showgrid=False, tickfont=dict(size=10, color=INK_LIGHT),
+               zeroline=False, showline=False),
+    yaxis=dict(showgrid=True, gridcolor="#DDD8CE", gridwidth=1,
+               tickfont=dict(size=10, color=INK_LIGHT),
+               zeroline=False, showline=False),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                font=dict(size=11, color=INK_MID)),
+)
 
 def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go.Figure:
     if not prices:
@@ -848,39 +785,42 @@ def price_chart(prices: list[dict], symbol: str, cur: str, years: int = 3) -> go
     first, last = df["price"].iloc[0], df["price"].iloc[-1]
     chg_pct = (last - first) / first * 100
     color = RISE if chg_pct >= 0 else FALL
-    rgb = ",".join(str(int(color.lstrip("#")[i:i+2], 16)) for i in (0, 2, 4))
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["price"],
+        x=df["date"], y=df["price"],
         mode="lines",
-        line=dict(color=color, width=1.6),
+        line=dict(color=color, width=1.5),
         fill="tozeroy",
-        fillcolor=f"rgba({rgb},0.07)",
+        fillcolor=f"rgba({','.join(str(int(color.lstrip('#')[i:i+2], 16)) for i in (0,2,4))}, 0.07)",
+        name=symbol,
         hovertemplate=f"%{{x|%b %d, %Y}}<br>{cur_sym(cur)}%{{y:.2f}}<extra></extra>",
-        name=symbol
     ))
-    fig.update_layout(**_base_layout(260), showlegend=False)
+    fig.update_layout(
+        **_PLOTLY_LAYOUT,
+        height=260,
+        xaxis_rangeslider_visible=False,
+        showlegend=False,
+    )
     return fig
 
 def income_chart(d: dict) -> go.Figure:
     cur = cur_sym(d.get("currency", "USD"))
     candidates = [
-        ("Revenue", d.get("revenue"), GOLD),
-        ("EBITDA", d.get("ebitda"), DEPTH),
-        ("Net Income", d.get("net_income"), RISE if (d.get("net_income") or 0) >= 0 else FALL),
+        ("Revenue",    d.get("revenue"),     GOLD),
+        ("EBITDA",     d.get("ebitda"),       DEPTH),
+        ("Net Income", d.get("net_income"),   RISE if (d.get("net_income") or 0) >= 0 else FALL),
     ]
-    items = [(lbl, val, col) for lbl, val, col in candidates if val is not None]
+    items = [(lbl, val, col) for lbl, val, col in candidates
+             if val is not None and not np.isnan(float(val))]
 
     if not items:
         fig = go.Figure()
-        fig.add_annotation(
-            text="Income data unavailable",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13, color=INK_LIGHT)
-        )
-        fig.update_layout(**_base_layout(260))
+        fig.add_annotation(text="Income data unavailable",
+                           xref="paper", yref="paper", x=0.5, y=0.5,
+                           showarrow=False, font=dict(size=13, color=INK_LIGHT,
+                           family="Outfit, sans-serif"))
+        fig.update_layout(**_PLOTLY_LAYOUT, height=260)
         return fig
 
     labels = [i[0] for i in items]
@@ -888,83 +828,218 @@ def income_chart(d: dict) -> go.Figure:
     colors = [i[2] for i in items]
 
     fig = go.Figure(go.Bar(
-        x=labels,
-        y=values,
+        x=labels, y=values,
         marker_color=colors,
         text=[f"{cur}{v:.1f}B" for v in values],
         textposition="outside",
-        textfont=dict(size=11, color=INK_MID),
+        textfont=dict(size=11, family="Outfit, sans-serif", color=INK_MID),
         hovertemplate="%{x}: " + cur + "%{y:.2f}B<extra></extra>",
     ))
     fig.update_traces(marker_line_width=0, width=0.45)
-    fig.update_layout(**_base_layout(260), showlegend=False)
+
+    max_v = max(abs(v) for v in values) * 1.3
+
+    # Build layout without xaxis/yaxis (they conflict with _PLOTLY_LAYOUT)
+    base = {k: v for k, v in _PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")}
+    fig.update_layout(
+        **base,
+        height=260,
+        showlegend=False,
+        xaxis=dict(showgrid=False, tickfont=dict(size=11, color=INK_MID)),
+        yaxis=dict(
+            range=[-max_v * 0.05, max_v],
+            showgrid=True, gridcolor="#DDD8CE",
+            tickfont=dict(size=10, color=INK_LIGHT),
+            zeroline=True, zerolinecolor="#DDD8CE",
+            ticksuffix="B",
+        ),
+    )
     return fig
 
-def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
+def factor_radar(d: dict, symbol: str) -> go.Figure:
+    """
+    Factor Scorecard Spider Chart — 7 dimensions, each scored 0–100.
+
+    Valuation : low multiples = high score (cheap = good)
+    Quality   : high margins + ROE = high score
+    Growth    : revenue & income scale (relative to cap)
+    Risk      : low vol + low beta + strong Z-score = high score
+    Momentum  : price return over window = high score
+    Dividend  : yield + payout sustainability
+    Liquidity : current ratio + low D/E
+    """
     def _clamp(v, lo, hi):
-        if v is None:
-            return None
+        if v is None: return None
         return max(lo, min(hi, v))
 
-    def _avg(vals):
-        vals = [v for v in vals if v is not None]
-        return round(sum(vals) / len(vals)) if vals else 50
+    def _score_val():
+        """Cheap = high score. Based on P/E, P/S, P/B."""
+        scores = []
+        pe = d.get("pe")
+        if pe and pe > 0:
+            scores.append(_clamp(100 - (pe - 5) * 1.5, 0, 100))
+        ps = d.get("ps")
+        if ps and ps > 0:
+            scores.append(_clamp(100 - (ps - 1) * 8, 0, 100))
+        pb = d.get("pb")
+        if pb and pb > 0:
+            scores.append(_clamp(100 - (pb - 1) * 12, 0, 100))
+        ev_e = d.get("ev_ebitda")
+        if ev_e and ev_e > 0:
+            scores.append(_clamp(100 - (ev_e - 6) * 2.5, 0, 100))
+        return round(sum(scores) / len(scores)) if scores else 50
 
-    valuation = _avg([
-        _clamp(100 - ((d.get("pe") or 20) - 5) * 1.5, 0, 100) if d.get("pe") else None,
-        _clamp(100 - ((d.get("ps") or 5) - 1) * 8, 0, 100) if d.get("ps") else None,
-        _clamp(100 - ((d.get("pb") or 3) - 1) * 12, 0, 100) if d.get("pb") else None,
-        _clamp(100 - ((d.get("ev_ebitda") or 12) - 6) * 2.5, 0, 100) if d.get("ev_ebitda") else None,
-    ])
-    quality = _avg([
-        _clamp((d.get("profit_margin") or 0) * 300, 0, 100),
-        _clamp((d.get("roe") or 0) * 250, 0, 100),
-        _clamp((d.get("roa") or 0) * 500, 0, 100),
-    ])
-    growth = _avg([
-        _clamp(100 / d.get("ps") * 15, 0, 100) if d.get("ps") else None,
-        _clamp(100 / d.get("ev_rev") * 12, 0, 100) if d.get("ev_rev") else None,
-    ])
-    risk = _avg([
-        _clamp(100 + (d.get("mdd") or -0.3) * 120, 0, 100),
-        _clamp(100 - (d.get("ulcer_index") or 10) * 3.5, 0, 100),
-        _clamp(100 - (d.get("pct_time_under_water") or 0.5) * 100, 0, 100),
-        _clamp((d.get("recovery_success_ratio") or 0.5) * 100, 0, 100),
-    ])
+    def _score_quality():
+        """Profitability quality."""
+        scores = []
+        pm = d.get("profit_margin")
+        if pm is not None:
+            scores.append(_clamp(pm * 300, 0, 100))   # 33% margin → 100
+        roe = d.get("roe")
+        if roe is not None:
+            scores.append(_clamp(roe * 250, 0, 100))  # 40% ROE → 100
+        roa = d.get("roa")
+        if roa is not None:
+            scores.append(_clamp(roa * 500, 0, 100))  # 20% ROA → 100
+        return round(sum(scores) / len(scores)) if scores else 50
 
-    momentum = 50
-    if d.get("prices") and len(d["prices"]) > 260:
-        closes = [p["price"] for p in d["prices"]]
-        r1y = (closes[-1] - closes[-252]) / closes[-252] * 100
-        momentum = round(_clamp(50 + r1y * 0.5, 0, 100))
+    def _score_growth():
+        """Revenue scale relative to market cap — proxy for capital efficiency."""
+        scores = []
+        ps = d.get("ps")
+        if ps and ps > 0:
+            scores.append(_clamp(100 / ps * 15, 0, 100))  # P/S=1 → high, P/S=10 → low
+        ev_r = d.get("ev_rev")
+        if ev_r and ev_r > 0:
+            scores.append(_clamp(100 / ev_r * 12, 0, 100))
+        ni = d.get("net_income"); mc = d.get("mkt_cap")
+        if ni and mc and mc > 0:
+            earn_yield = ni / mc
+            scores.append(_clamp(earn_yield * 600, 0, 100))
+        return round(sum(scores) / len(scores)) if scores else 50
 
-    convexity = 50
-    if d.get("prices") and len(d["prices"]) > 60:
-        closes = np.array([p["price"] for p in d["prices"]], dtype=float)
+    def _score_risk():
+        """
+        Recovery-path risk model:
+        MDD depth + Ulcer Index + Time Under Water + Recovery Success Rate.
+        Volatility is secondary — high vol with fast recovery is acceptable.
+        """
+        scores = []
+        mdd = d.get("mdd")
+        if mdd is not None:
+            scores.append(_clamp(100 + mdd * 120, 0, 100))   # mdd<0; -40% → 52, -80% → 4
+        ulcer = d.get("ulcer_index")
+        if ulcer is not None:
+            scores.append(_clamp(100 - ulcer * 3.5, 0, 100))  # ulcer=20 → 30, ulcer=8 → 72
+        tuw = d.get("pct_time_under_water")
+        if tuw is not None:
+            scores.append(_clamp(100 - tuw * 120, 0, 100))   # 80% TUW → 4
+        rec_success = d.get("recovery_success_ratio")
+        if rec_success is not None:
+            scores.append(_clamp(rec_success * 100, 0, 100))
+        avg_rec = d.get("avg_recovery_days")
+        if avg_rec is not None:
+            scores.append(_clamp(100 - avg_rec / 3, 0, 100))  # 300d → 0, 30d → 90
+        # Volatility as secondary tiebreaker
+        vol = d.get("vol")
+        if vol is not None:
+            scores.append(_clamp(100 - vol * 150, 0, 100))   # 65% vol → 2
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_momentum():
+        """Price momentum over the available history."""
+        prices = d.get("prices", [])
+        if len(prices) < 60:
+            return 50
+        closes = [p["price"] for p in prices]
+        # 1Y momentum
+        ret_1y = (closes[-1] - closes[max(0, len(closes)-252)]) / closes[max(0, len(closes)-252)] * 100
+        # 3M momentum
+        ret_3m = (closes[-1] - closes[max(0, len(closes)-63)]) / closes[max(0, len(closes)-63)] * 100
+        score = _clamp(50 + ret_1y * 0.5, 0, 100) * 0.6 + _clamp(50 + ret_3m * 1.5, 0, 100) * 0.4
+        return round(score)
+
+    def _score_dividend():
+        dy = d.get("div_yield") or 0
+        po = d.get("payout")    or 0
+        if dy == 0:
+            return 30   # no dividend — neutral-low
+        yield_score = _clamp(dy * 1000, 0, 100)       # 10% yield → 100
+        payout_score = _clamp(100 - abs(po - 0.5) * 150, 0, 100)  # 50% payout ideal
+        return round(yield_score * 0.6 + payout_score * 0.4)
+
+    def _score_liquidity():
+        scores = []
+        cr = d.get("current_ratio")
+        if cr is not None:
+            scores.append(_clamp((cr - 0.5) / 2.5 * 100, 0, 100))  # 3.0 → 100
+        deq = d.get("debt_eq")
+        if deq is not None:
+            scores.append(_clamp(100 - deq * 30, 0, 100))  # D/E=3 → 10
+        ic = d.get("ic")
+        if ic is not None:
+            scores.append(_clamp(ic * 4, 0, 100))   # coverage=25 → 100
+        return round(sum(scores) / len(scores)) if scores else 50
+
+    def _score_convexity():
+        """
+        Convexity = asymmetry of returns: upside capture vs downside capture.
+        High convexity → stock gains more on up days than it loses on down days.
+        Computed as: mean(positive daily returns) / abs(mean(negative daily returns))
+        ratio > 1 = convex (good), ratio < 1 = concave (bad).
+        Also incorporates Calmar ratio (ann_return / abs(MDD)).
+        """
+        prices = d.get("prices", [])
+        if len(prices) < 60:
+            return 50
+        closes = np.array([p["price"] for p in prices], dtype=float)
         rets = np.diff(np.log(closes[closes > 0]))
+        if len(rets) < 30:
+            return 50
+
+        up_rets   = rets[rets > 0]
+        down_rets = rets[rets < 0]
+        scores = []
+
+        # Upside/downside capture ratio
+        if len(up_rets) > 5 and len(down_rets) > 5:
+            up_mean   = np.mean(up_rets)
+            down_mean = abs(np.mean(down_rets))
+            if down_mean > 0:
+                conv_ratio = up_mean / down_mean
+                # ratio=1.0 → 50, ratio=1.5 → 80, ratio=2.0 → 100, ratio=0.5 → 0
+                scores.append(_clamp((conv_ratio - 0.5) / 1.5 * 100, 0, 100))
+
+        # Calmar ratio: annualised return / abs(max drawdown)
+        mdd = d.get("mdd")
+        if mdd and abs(mdd) > 0.001:
+            ann_return = np.mean(rets) * 252
+            calmar = ann_return / abs(mdd)
+            # calmar=0 → 40, calmar=0.5 → 65, calmar=1 → 80, calmar=2 → 100
+            scores.append(_clamp(40 + calmar * 40, 0, 100))
+
+        # Positive skew of returns (right tail > left tail)
         if len(rets) > 20:
-            convexity = round(_clamp(50 + float(pd.Series(rets).skew()) * 20, 0, 100))
+            skew = float(pd.Series(rets).skew())
+            scores.append(_clamp(50 + skew * 20, 0, 100))
 
-    dividend = round(_clamp((d.get("div_yield") or 0) * 1000, 0, 100)) if d.get("div_yield") else 30
-    liquidity = _avg([
-        _clamp(((d.get("current_ratio") or 1.0) - 0.5) / 2.5 * 100, 0, 100),
-        _clamp(100 - (d.get("debt_eq") or 1.0) * 30, 0, 100),
-        _clamp((d.get("ic") or 5.0) * 4, 0, 100),
-    ])
+        return round(sum(scores) / len(scores)) if scores else 50
 
+    # Build scores
     factors = {
-        "Valuation": valuation,
-        "Quality": quality,
-        "Growth": growth,
-        "Risk": risk,
-        "Momentum": momentum,
-        "Convexity": convexity,
-        "Dividend": dividend,
-        "Liquidity": liquidity,
+        "Valuation" : _score_val(),
+        "Quality"   : _score_quality(),
+        "Growth"    : _score_growth(),
+        "Risk"      : _score_risk(),
+        "Momentum"  : _score_momentum(),
+        "Convexity" : _score_convexity(),
+        "Dividend"  : _score_dividend(),
+        "Liquidity" : _score_liquidity(),
     }
 
     labels = list(factors.keys())
     values = list(factors.values())
+    # Close the polygon
     labels_closed = labels + [labels[0]]
     values_closed = values + [values[0]]
 
@@ -976,6 +1051,7 @@ def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
         fillcolor="rgba(182,157,95,0.15)",
         line=dict(color=GOLD, width=2),
         marker=dict(size=5, color=GOLD),
+        name=symbol,
         hovertemplate="<b>%{theta}</b><br>Score: %{r:.0f}/100<extra></extra>",
     ))
     fig.update_layout(
@@ -986,13 +1062,13 @@ def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
                 range=[0, 100],
                 tickvals=[20, 40, 60, 80, 100],
                 tickfont=dict(size=9, color=INK_LIGHT),
-                gridcolor=GRID,
-                linecolor=GRID
+                gridcolor="#DDD8CE",
+                linecolor="#DDD8CE",
             ),
             angularaxis=dict(
-                tickfont=dict(size=12, color=INK),
-                gridcolor=GRID,
-                linecolor=GRID
+                tickfont=dict(size=12, color=INK, family="Outfit, sans-serif"),
+                gridcolor="#DDD8CE",
+                linecolor="#DDD8CE",
             ),
         ),
         paper_bgcolor=STONE,
@@ -1004,18 +1080,24 @@ def factor_radar(d: dict, symbol: str) -> tuple[go.Figure, dict]:
     )
     return fig, factors
 
+
 def range_52w_chart(d: dict) -> go.Figure | None:
-    low = d.get("w52_low")
-    high = d.get("w52_high")
+    """
+    Vertical 52-week range graphic — Maison aesthetic.
+    Smart label placement prevents overlapping when price is near low or high.
+    """
+    low   = d.get("w52_low")
+    high  = d.get("w52_high")
     price = d.get("price")
-    cur = cur_sym(d.get("currency", "USD"))
-    dist_low = d.get("dist_52w_low")
+    cur   = cur_sym(d.get("currency", "USD"))
+    dist_low  = d.get("dist_52w_low")
+    dist_high = d.get("dist_52w_high")
 
     if not low or not high or not price or high <= low:
         return None
 
-    span = high - low
-    p_pct = (price - low) / span * 100
+    span  = high - low
+    p_pct = (price - low) / span * 100   # 0–100 position within range
 
     if p_pct >= 66:
         price_color = RISE
@@ -1025,157 +1107,164 @@ def range_52w_chart(d: dict) -> go.Figure | None:
         price_color = GOLD
 
     fig = go.Figure()
-    pad = span * 0.22
+    PAD = span * 0.22
 
-    # Background zone
-    fig.add_shape(
-        type="rect",
+    # ── Zone background ───────────────────────────────────────────
+    fig.add_shape(type="rect",
         x0=0.25, x1=0.75,
-        y0=low - pad * 0.3, y1=high + pad * 0.3,
+        y0=low - PAD * 0.3, y1=high + PAD * 0.3,
         fillcolor="rgba(182,157,95,0.04)",
-        line=dict(width=0),
-        layer="below"
+        line=dict(width=0), layer="below",
     )
 
-    # Main vertical line
-    fig.add_shape(
-        type="line",
-        x0=0.5, x1=0.5,
-        y0=low, y1=high,
-        line=dict(color=GRID, width=2),
-        layer="below"
+    # ── Full stem ─────────────────────────────────────────────────
+    fig.add_shape(type="line",
+        x0=0.5, x1=0.5, y0=low, y1=high,
+        line=dict(color="#DDD8CE", width=2), layer="below",
     )
 
-    # Current price line
-    fig.add_shape(
-        type="line",
-        x0=0.30, x1=0.70,
-        y0=price, y1=price,
-        line=dict(color=price_color, width=3)
-    )
+    # ── Gradient body low → price ─────────────────────────────────
+    steps = 40
+    r2, g2, b2 = (int(price_color.lstrip("#")[j:j+2], 16) for j in (0, 2, 4))
+    for i in range(steps):
+        y0_s = low + (price - low) * (i / steps)
+        y1_s = low + (price - low) * ((i + 1) / steps)
+        alpha = 0.06 + (i / steps) * 0.24
+        fig.add_shape(type="rect",
+            x0=0.38, x1=0.62, y0=y0_s, y1=y1_s,
+            fillcolor=f"rgba({r2},{g2},{b2},{alpha:.2f})",
+            line=dict(width=0), layer="below",
+        )
 
-    # Current price marker
+    # ── Tick lines at Low and High ────────────────────────────────
+    for yval in [low, high]:
+        fig.add_shape(type="line",
+            x0=0.38, x1=0.62, y0=yval, y1=yval,
+            line=dict(color=INK_LIGHT, width=1.5),
+        )
+
+    # ── Current price bar + dot ───────────────────────────────────
+    fig.add_shape(type="line",
+        x0=0.3, x1=0.7, y0=price, y1=price,
+        line=dict(color=price_color, width=3),
+    )
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[price],
-        mode="markers",
-        marker=dict(
-            size=16,
-            color=price_color,
-            line=dict(color=WHITE, width=2.5)
-        ),
+        x=[0.5], y=[price], mode="markers",
+        marker=dict(size=16, color=price_color,
+                    line=dict(color=WHITE, width=2.5)),
         showlegend=False,
-        hovertemplate=f"<b>Current</b><br>{cur}{price:,.2f}<extra></extra>",
+        hovertemplate=f"<b>Current</b><br>{cur}{price:,.2f}<br>{p_pct:.0f}% of range<extra></extra>",
     ))
 
-    # High / low markers
+    # ── High / Low marker triangles ───────────────────────────────
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[high],
-        mode="markers",
+        x=[0.5], y=[high], mode="markers",
         marker=dict(size=9, color=RISE, symbol="triangle-up",
                     line=dict(color=WHITE, width=1.5)),
         showlegend=False,
         hovertemplate=f"<b>52w High</b><br>{cur}{high:,.2f}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=[0.5], y=[low],
-        mode="markers",
+        x=[0.5], y=[low], mode="markers",
         marker=dict(size=9, color=FALL, symbol="triangle-down",
                     line=dict(color=WHITE, width=1.5)),
         showlegend=False,
         hovertemplate=f"<b>52w Low</b><br>{cur}{low:,.2f}<extra></extra>",
     ))
 
-    # Left percentage label
+    # ── LEFT mini ruler ───────────────────────────────────────────
+    fig.add_shape(type="rect", x0=0.12, x1=0.17, y0=price, y1=high,
+        fillcolor="#EDE8DF", line=dict(width=0))
+    fig.add_shape(type="rect", x0=0.12, x1=0.17, y0=low, y1=price,
+        fillcolor=f"rgba({r2},{g2},{b2},0.3)", line=dict(width=0))
+
+    # ── LEFT label: % of range ────────────────────────────────────
     fig.add_annotation(
-        x=0.08,
-        y=(low + high) / 2,
-        xref="x",
-        yref="y",
-        text=(
-            f"<b style='font-size:22px;font-family:Cormorant Garamond,serif;"
-            f"color:{price_color}'>{p_pct:.0f}%</b><br>"
-            f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>OF RANGE</span>"
-        ),
-        showarrow=False,
-        xanchor="center",
-        yanchor="middle"
+        x=0.09, y=(low + high) / 2, xref="x", yref="y",
+        text=(f"<b style='font-size:22px;font-family:Cormorant Garamond,serif;"
+              f"color:{price_color}'>{p_pct:.0f}%</b><br>"
+              f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>OF RANGE</span>"),
+        showarrow=False, xanchor="center", yanchor="middle",
     )
 
-    # smart label placement right side
-    norm_high = 1.0
+    # ── SMART RIGHT-SIDE LABELS ───────────────────────────────────
+    # Compute normalised positions (0–1) for collision detection
+    norm_high  = 1.0
     norm_price = p_pct / 100
-    norm_low = 0.0
-    min_gap = 0.18
+    norm_low   = 0.0
 
-    y_high_n = norm_high
+    # Minimum visual gap in normalised units before we push labels apart
+    MIN_GAP = 0.18
+
+    # Start with natural y positions, then push apart if too close
+    y_high_n  = norm_high
     y_price_n = norm_price
-    y_low_n = norm_low
+    y_low_n   = norm_low
 
-    if y_high_n - y_price_n < min_gap:
-        y_price_n = norm_high - min_gap
-    if y_price_n - y_low_n < min_gap:
-        y_price_n = norm_low + min_gap
-        if y_high_n - y_price_n < min_gap:
-            y_high_n = y_price_n + min_gap
+    if y_high_n - y_price_n < MIN_GAP:
+        # price near high → push price label down
+        y_high_n  = norm_high
+        y_price_n = norm_high - MIN_GAP
+    if y_price_n - y_low_n < MIN_GAP:
+        # price near low → push price label up
+        y_price_n = norm_low + MIN_GAP
+        # re-check high collision after pushing up
+        if y_high_n - y_price_n < MIN_GAP:
+            y_high_n = y_price_n + MIN_GAP
 
-    def n2p(n):
-        return low + n * span
+    # Convert back to price space
+    def n2p(n): return low + n * span
 
-    y_high_lbl = n2p(y_high_n)
+    y_high_lbl  = n2p(y_high_n)
     y_price_lbl = n2p(y_price_n)
-    y_low_lbl = n2p(y_low_n)
+    y_low_lbl   = n2p(y_low_n)
 
-    # connector lines if needed
-    connector_thresh = span * 0.04
+    # Draw connector lines if label moved significantly from actual price
+    CONNECTOR_THRESH = span * 0.04
     for actual, label_y, color in [
-        (high, y_high_lbl, RISE),
+        (high,  y_high_lbl,  RISE),
         (price, y_price_lbl, price_color),
-        (low, y_low_lbl, FALL),
+        (low,   y_low_lbl,   FALL),
     ]:
-        if abs(actual - label_y) > connector_thresh:
-            fig.add_shape(
-                type="line",
-                x0=0.72, x1=0.76,
-                y0=actual, y1=label_y,
-                line=dict(color=color, width=1, dash="dot")
+        if abs(actual - label_y) > CONNECTOR_THRESH:
+            fig.add_shape(type="line",
+                x0=0.72, x1=0.76, y0=actual, y1=label_y,
+                line=dict(color=color, width=1, dash="dot"),
             )
 
-    dist_label = f"+{dist_low*100:.1f}% above low" if dist_low is not None else ""
+    dist_label = f"+{dist_low*100:.1f}% above low" if dist_low else ""
 
     annotations = [
-        dict(
-            x=0.79, y=y_high_lbl,
-            text=(
-                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>52W HIGH</span><br>"
-                f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;color:{RISE}'>{cur}{high:,.2f}</b>"
-            )
-        ),
-        dict(
-            x=0.79, y=y_price_lbl,
-            text=(
-                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>CURRENT</span><br>"
-                f"<b style='font-size:17px;font-family:Cormorant Garamond,serif;color:{price_color}'>{cur}{price:,.2f}</b>"
-                + (f"<br><span style='font-size:9px;color:{price_color}'>{dist_label}</span>" if dist_label else "")
-            )
-        ),
-        dict(
-            x=0.79, y=y_low_lbl,
-            text=(
-                f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>52W LOW</span><br>"
-                f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;color:{FALL}'>{cur}{low:,.2f}</b>"
-            )
-        ),
+        # 52w High
+        dict(x=0.79, y=y_high_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"52W HIGH</span><br>"
+                   f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+                   f"color:{RISE}'>{cur}{high:,.2f}</b>"),
+             xanchor="left", yanchor="middle"),
+        # Current
+        dict(x=0.79, y=y_price_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"CURRENT</span><br>"
+                   f"<b style='font-size:17px;font-family:Cormorant Garamond,serif;"
+                   f"color:{price_color}'>{cur}{price:,.2f}</b>"
+                   + (f"<br><span style='font-size:9px;color:{price_color}'>{dist_label}</span>"
+                      if dist_label else "")),
+             xanchor="left", yanchor="middle"),
+        # 52w Low
+        dict(x=0.79, y=y_low_lbl,
+             text=(f"<span style='font-size:9px;color:{INK_LIGHT};letter-spacing:.1em'>"
+                   f"52W LOW</span><br>"
+                   f"<b style='font-size:15px;font-family:Cormorant Garamond,serif;"
+                   f"color:{FALL}'>{cur}{low:,.2f}</b>"),
+             xanchor="left", yanchor="middle"),
     ]
-
     for ann in annotations:
         fig.add_annotation(
-            x=ann["x"], y=ann["y"],
-            xref="x", yref="y",
-            text=ann["text"],
-            showarrow=False,
-            xanchor="left",
-            yanchor="middle",
-            font=dict(family="Outfit, sans-serif", size=11)
+            x=ann["x"], y=ann["y"], xref="x", yref="y",
+            text=ann["text"], showarrow=False,
+            xanchor=ann["xanchor"], yanchor=ann["yanchor"],
+            font=dict(family="Outfit, sans-serif", size=11),
         )
 
     fig.update_layout(
@@ -1183,51 +1272,301 @@ def range_52w_chart(d: dict) -> go.Figure | None:
         plot_bgcolor=STONE,
         height=340,
         margin=dict(l=10, r=10, t=20, b=20),
-        xaxis=dict(
-            range=[0, 1.62],
-            showgrid=False,
-            showticklabels=False,
-            zeroline=False,
-            showline=False,
-            fixedrange=True
-        ),
-        yaxis=dict(
-            range=[low - pad, high + pad],
-            showgrid=False,
-            showticklabels=False,
-            zeroline=False,
-            showline=False,
-            fixedrange=True
-        ),
-        showlegend=False
+        xaxis=dict(range=[0, 1.62], showgrid=False, showticklabels=False,
+                   zeroline=False, showline=False, fixedrange=True),
+        yaxis=dict(range=[low - PAD, high + PAD], showgrid=False,
+                   showticklabels=False, zeroline=False, showline=False,
+                   fixedrange=True),
+        showlegend=False,
+        font=dict(family="Outfit, sans-serif"),
     )
-
     return fig
 
+
+def recovery_dashboard_chart(prices: list[dict], symbol: str, years: int = 5) -> go.Figure:
+    """
+    Combined subplot:
+      Row 1 (60%): Price line + Running Peak (dashed gold)
+      Row 2 (40%): Drawdown-from-Peak area chart
+    Shared X-axis — eliminates two separate charts.
+    """
+    from plotly.subplots import make_subplots
+
+    if not prices:
+        return go.Figure()
+
+    df = pd.DataFrame(prices)
+    df["date"]  = pd.to_datetime(df["date"])
+    cutoff = datetime.now() - timedelta(days=years * 365)
+    df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
+    if df.empty:
+        return go.Figure()
+
+    df["peak"] = df["price"].cummax()
+    df["dd"]   = (df["price"] - df["peak"]) / df["peak"] * 100
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.60, 0.40],
+        vertical_spacing=0.04,
+    )
+
+    # ── Row 1: Price + Running Peak ───────────────────────────────
+    first, last = df["price"].iloc[0], df["price"].iloc[-1]
+    price_color = RISE if last >= first else FALL
+    rgb = ",".join(str(int(price_color.lstrip("#")[i:i+2], 16)) for i in (0, 2, 4))
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["price"],
+        mode="lines", name="Price",
+        line=dict(color=price_color, width=1.8),
+        fill="tozeroy",
+        fillcolor=f"rgba({rgb},0.05)",
+        hovertemplate=f"<b>{symbol}</b><br>%{{x|%b %d, %Y}}<br>Price: %{{y:,.2f}}<extra></extra>",
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["peak"],
+        mode="lines", name="Running Peak",
+        line=dict(color=GOLD, width=1.4, dash="dash"),
+        hovertemplate="%{x|%b %d}<br>Peak: %{y:,.2f}<extra></extra>",
+    ), row=1, col=1)
+
+    # ── Row 2: Drawdown area ──────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["dd"],
+        mode="lines", name="Drawdown",
+        line=dict(color=FALL, width=1.5),
+        fill="tozeroy",
+        fillcolor=f"rgba(148,72,72,0.15)",
+        hovertemplate="%{x|%b %d}<br>DD: %{y:.1f}%<extra></extra>",
+        showlegend=False,
+    ), row=2, col=1)
+
+    # Zero line on drawdown
+    fig.add_hline(y=0, line=dict(color=GRID, width=1), row=2, col=1)
+
+    fig.update_layout(
+        paper_bgcolor=STONE,
+        plot_bgcolor=STONE,
+        height=420,
+        margin=dict(l=10, r=10, t=10, b=20),
+        legend=dict(
+            orientation="h", x=0, y=1.04,
+            font=dict(size=11, color=INK_MID, family="Outfit, sans-serif"),
+        ),
+        font=dict(family="Outfit, sans-serif"),
+        hovermode="x unified",
+    )
+    # Row 1 axes
+    fig.update_xaxes(showgrid=False, showticklabels=False,
+                     zeroline=False, row=1, col=1)
+    fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1,
+                     tickfont=dict(size=10, color=INK_LIGHT),
+                     zeroline=False, row=1, col=1)
+    # Row 2 axes
+    fig.update_xaxes(showgrid=False, tickfont=dict(size=10, color=INK_LIGHT),
+                     zeroline=False, row=2, col=1)
+    fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1,
+                     tickfont=dict(size=10, color=INK_LIGHT),
+                     ticksuffix="%", zeroline=True, zerolinecolor=GRID,
+                     row=2, col=1)
+    return fig
+
+
+def recovery_metrics_html(d: dict, symbol: str) -> str:
+    """Summary card with all recovery KPIs — used in Tab 4."""
+    def _fmt_eff(v):
+        """Format recovery_efficiency as readable ratio (e.g. 0.42%/day)."""
+        if v is None:
+            return "—"
+        return f"{v*100:.3f}%/day"
+
+    def _fmt_days(v):
+        if v is None:
+            return "—"
+        if v < 30:  return f"{v:.0f}d"
+        return f"{v/30:.1f}mo  ({v:.0f}d)"
+
+    rows_data = [
+        ("Max Drawdown",         fmt_pct(d.get("mdd"))),
+        ("Ulcer Index",          fmt_num(d.get("ulcer_index"))),
+        ("Time Under Water",     fmt_pct(d.get("pct_time_under_water"))),
+        ("Avg Recovery",         _fmt_days(d.get("avg_recovery_days"))),
+        ("Median Recovery",      _fmt_days(d.get("median_recovery_days"))),
+        ("Max Recovery",         _fmt_days(d.get("max_recovery_days"))),
+        ("Avg TUW Period",       _fmt_days(d.get("avg_tuw_days"))),
+        ("Recovery Success",     fmt_pct(d.get("recovery_success_ratio"))),
+        ("Recovery Efficiency",  _fmt_eff(d.get("recovery_efficiency"))),
+        ("Calmar Ratio",         fmt_num(d.get("calmar"))),
+        ("Downside Volatility",  fmt_pct(d.get("downside_vol"))),
+    ]
+
+    def _ampel(key, val):
+        v = d.get(key)
+        if v is None:
+            return ""
+        rules = {
+            "mdd":                   [("bad", lambda x: abs(x)>0.55), ("warn", lambda x: abs(x)>0.30), ("good", lambda x: abs(x)<0.15)],
+            "ulcer_index":           [("bad", lambda x: x>20), ("warn", lambda x: x>10), ("good", lambda x: x<5)],
+            "pct_time_under_water":  [("bad", lambda x: x>0.60), ("warn", lambda x: x>0.40), ("good", lambda x: x<0.25)],
+            "avg_recovery_days":     [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
+            "median_recovery_days":  [("bad", lambda x: x>180), ("warn", lambda x: x>60), ("good", lambda x: x<30)],
+            "max_recovery_days":     [("bad", lambda x: x>365), ("warn", lambda x: x>120)],
+            "avg_tuw_days":          [("bad", lambda x: x>200), ("warn", lambda x: x>90)],
+            "recovery_success_ratio":[("bad", lambda x: x<0.40), ("warn", lambda x: x<0.65), ("good", lambda x: x>=0.75)],
+            "recovery_efficiency":   [("good", lambda x: x>0.003), ("warn", lambda x: x>0.001)],
+            "calmar":                [("good", lambda x: x>1.0), ("warn", lambda x: x>0.3), ("bad", lambda x: x<=0.3)],
+            "downside_vol":          [("bad", lambda x: x>0.30), ("warn", lambda x: x>0.18), ("good", lambda x: x<0.12)],
+        }
+        for tone, fn in rules.get(key, []):
+            try:
+                if fn(v):
+                    return _sig(tone) + " "
+            except Exception:
+                pass
+        return ""
+
+    html_rows = ""
+    for i, (label, value) in enumerate(rows_data):
+        key = list(d.keys())[0]  # placeholder — map by index
+        keys = ["mdd","ulcer_index","pct_time_under_water","avg_recovery_days",
+                "median_recovery_days","max_recovery_days","avg_tuw_days",
+                "recovery_success_ratio","recovery_efficiency","calmar","downside_vol"]
+        sig = _ampel(keys[i], value)
+        bg = f"background:rgba(182,157,95,0.04);" if i % 2 == 0 else ""
+        html_rows += (
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'padding:7px 12px;border-radius:6px;{bg}">'
+            f'<span style="font-size:12px;color:{INK_MID};font-family:Outfit,sans-serif;">'
+            f'{sig}{label}</span>'
+            f'<span style="font-size:14px;font-weight:600;color:{INK};font-family:Outfit,sans-serif;">'
+            f'{value}</span>'
+            f'</div>'
+        )
+
+    return (
+        f'<div style="background:{WHITE};border:1px solid #DDD8CE;border-radius:14px;'
+        f'padding:20px 16px;">'
+        f'<div style="font-family:Outfit,sans-serif;font-size:10px;letter-spacing:.18em;'
+        f'text-transform:uppercase;color:{GOLD};margin-bottom:16px;">Recovery Profile · {symbol}</div>'
+        f'{html_rows}'
+        f'</div>'
+    )
+
+
+def recovery_cycle_bar_chart(prices: list[dict], years: int = 10) -> go.Figure:
+    """Bar chart: one bar per drawdown cycle, coloured by recovery status."""
+    if not prices:
+        return go.Figure()
+
+    df = pd.DataFrame(prices)
+    df["date"] = pd.to_datetime(df["date"])
+    cutoff = datetime.now() - timedelta(days=years * 365)
+    df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
+    if df.empty:
+        return go.Figure()
+
+    closes = df["price"].values.astype(float)
+    dates  = df["date"].values
+
+    peaks = np.maximum.accumulate(closes)
+    dds   = (closes - peaks) / peaks
+    under = dds < 0
+
+    cycles, in_seg, start = [], False, None
+    for i, uw in enumerate(under):
+        if uw and not in_seg:
+            in_seg, start = True, i
+        elif not uw and in_seg:
+            cycles.append((start, i - 1, i))
+            in_seg, start = False, None
+    if in_seg and start is not None:
+        cycles.append((start, len(closes) - 1, None))
+
+    labels, heights, colors, hover = [], [], [], []
+    for seg_s, seg_e, rec_i in cycles:
+        pk_i  = max(seg_s - 1, 0)
+        seg   = closes[seg_s:seg_e + 1]
+        tr_i  = seg_s + int(np.argmin(seg))
+        depth = abs(float(dds[tr_i])) * 100
+        pk_dt = pd.Timestamp(dates[pk_i]).strftime("%Y-%m")
+        if rec_i is not None:
+            tr_dt  = pd.Timestamp(dates[tr_i])
+            rc_dt  = pd.Timestamp(dates[rec_i])
+            d2rec  = int((rc_dt - tr_dt).days)
+            labels.append(pk_dt)
+            heights.append(d2rec)
+            colors.append(f"rgba(77,124,91,0.80)")
+            hover.append(f"Peak: {pk_dt}<br>DD: -{depth:.1f}%<br>Recovery: {d2rec}d")
+        else:
+            labels.append(pk_dt)
+            heights.append(int((pd.Timestamp(dates[-1]) - pd.Timestamp(dates[tr_i])).days))
+            colors.append(f"rgba(148,72,72,0.70)")
+            hover.append(f"Peak: {pk_dt}<br>DD: -{depth:.1f}%<br>⚠ Not yet recovered")
+
+    if not labels:
+        return go.Figure()
+
+    fig = go.Figure(go.Bar(
+        x=labels, y=heights,
+        marker_color=colors,
+        marker_line_width=0,
+        text=[f"{h}d" for h in heights],
+        textposition="outside",
+        textfont=dict(size=9, color=INK_MID),
+        customdata=hover,
+        hovertemplate="%{customdata}<extra></extra>",
+    ))
+
+    # Legend annotation
+    fig.add_annotation(
+        x=0.01, y=1.06, xref="paper", yref="paper",
+        text=(f"<span style='color:rgba(77,124,91,0.9)'>■</span> Recovered  "
+              f"<span style='color:rgba(148,72,72,0.9)'>■</span> Still under water"),
+        showarrow=False, xanchor="left",
+        font=dict(size=11, color=INK_MID, family="Outfit, sans-serif"),
+    )
+
+    fig.update_layout(
+        paper_bgcolor=STONE, plot_bgcolor=STONE,
+        height=280,
+        margin=dict(l=10, r=10, t=36, b=20),
+        showlegend=False,
+        xaxis=dict(showgrid=False, tickangle=-40,
+                   tickfont=dict(size=10, color=INK_LIGHT)),
+        yaxis=dict(showgrid=True, gridcolor=GRID,
+                   tickfont=dict(size=10, color=INK_LIGHT),
+                   title="Days to recover",
+                   title_font=dict(size=10, color=INK_MID)),
+        font=dict(family="Outfit, sans-serif"),
+    )
+    return fig
+
+
 def comparison_chart(all_data: list[dict], metric: str, label: str) -> go.Figure:
-    labels = [d["symbol"] for d in all_data]
-    values = [d.get(metric) for d in all_data]
-    colors = [GOLD if v is not None else "#DDD8CE" for v in values]
+    values  = [d.get(metric) for d in all_data]
+    colors  = [GOLD if v is not None else "#DDD8CE" for v in values]
     clean_v = [v if v is not None else 0 for v in values]
 
     fig = go.Figure(go.Bar(
-        x=labels,
-        y=clean_v,
+        x=symbols, y=clean_v,
         marker_color=colors,
         text=[f"{v:.2f}" if v is not None else "N/A" for v in values],
         textposition="outside",
-        textfont=dict(size=11, color=INK_MID),
+        textfont=dict(size=11, family="Outfit", color=INK_MID),
         hovertemplate="%{x}: %{y:.2f}<extra></extra>",
     ))
     fig.update_traces(marker_line_width=0, width=0.45)
-    fig.update_layout(
-        **_base_layout(240),
-        title=dict(text=label, font=dict(size=11, color=INK_LIGHT), x=0, xanchor="left"),
-        showlegend=False
-    )
+    fig.update_layout(**_PLOTLY_LAYOUT, height=240, title=dict(
+        text=label, font=dict(size=11, color=INK_LIGHT, family="Outfit"),
+        x=0, xanchor="left",
+    ), showlegend=False)
     return fig
 
 def portfolio_returns_chart(all_data: list[dict], years: int = 3) -> go.Figure:
+    """Normalised price chart (100 = start) for all tickers."""
     fig = go.Figure()
     palette = [GOLD, RISE, FALL, DEPTH, CAUTION, "#7C6D9F", "#5B8FA8", "#B5715A"]
 
@@ -1242,275 +1581,95 @@ def portfolio_returns_chart(all_data: list[dict], years: int = 3) -> go.Figure:
         if df.empty or len(df) < 5:
             continue
         df["norm"] = df["price"] / df["price"].iloc[0] * 100
+        sym = d["symbol"]
+        color = palette[i % len(palette)]
         fig.add_trace(go.Scatter(
-            x=df["date"],
-            y=df["norm"],
-            mode="lines",
-            name=d["symbol"],
-            line=dict(color=palette[i % len(palette)], width=1.8),
-            hovertemplate=f"<b>{d['symbol']}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}<extra></extra>",
+            x=df["date"], y=df["norm"],
+            mode="lines", name=sym,
+            line=dict(color=color, width=1.8),
+            hovertemplate=f"<b>{sym}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}<extra></extra>",
         ))
 
-    base = _base_layout(320).copy()
-    base.pop("yaxis", None)
     fig.update_layout(
-        **base,
-        yaxis=dict(
-            showgrid=True,
-            gridcolor=GRID,
-            gridwidth=1,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            zeroline=False,
-            showline=False,
-            title="Indexed (base = 100)",
-            title_font=dict(size=11, color=INK_MID),
-        )
+        **_PLOTLY_LAYOUT,
+        height=320,
+        yaxis_title="Indexed (base = 100)",
+        xaxis_rangeslider_visible=False,
     )
     return fig
 
 # ═══════════════════════════════════════════════════════════════
-# RECOVERY DASHBOARD CHARTS
-# ═══════════════════════════════════════════════════════════════
-
-def _prices_to_df(prices: list[dict], years: int = 10) -> pd.DataFrame:
-    if not prices:
-        return pd.DataFrame(columns=["date", "price"])
-    df = pd.DataFrame(prices).copy()
-    df["date"] = pd.to_datetime(df["date"])
-    cutoff = datetime.now() - timedelta(days=years * 365)
-    df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
-    return df
-
-def price_vs_running_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
-    df = _prices_to_df(prices, years)
-    if df.empty:
-        return go.Figure()
-
-    df["peak"] = df["price"].cummax()
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["price"],
-        mode="lines", line=dict(color=INK, width=2),
-        name="Price",
-        hovertemplate="%{x|%b %d, %Y}<br>Price: %{y:.2f}<extra></extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["peak"],
-        mode="lines", line=dict(color=GOLD, width=1.8, dash="dash"),
-        name="Running Peak",
-        hovertemplate="%{x|%b %d, %Y}<br>Peak: %{y:.2f}<extra></extra>",
-    ))
-    fig.update_layout(
-        **_base_layout(300),
-        title=dict(text="Price vs Running Peak", x=0.5, xanchor="center", font=dict(size=15, color=INK))
-    )
-    return fig
-
-def drawdown_from_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
-    df = _prices_to_df(prices, years)
-    if df.empty:
-        return go.Figure()
-
-    df["peak"] = df["price"].cummax()
-    df["drawdown_pct"] = (df["price"] - df["peak"]) / df["peak"] * 100
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["drawdown_pct"],
-        mode="lines",
-        line=dict(color="#A85A5A", width=2),
-        fill="tozeroy",
-        fillcolor="rgba(148,72,72,0.18)",
-        hovertemplate="%{x|%b %d, %Y}<br>Drawdown: %{y:.2f}%<extra></extra>",
-    ))
-
-    base = _base_layout(300).copy()
-    base.pop("xaxis", None)
-    base.pop("yaxis", None)
-
-    fig.update_layout(
-        **base,
-        title=dict(text="Drawdown from Prior Peak", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
-        showlegend=False,
-        xaxis=dict(
-            showgrid=False,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            zeroline=False,
-            showline=False
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor=GRID,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            ticksuffix="%",
-            zeroline=True,
-            zerolinecolor=GRID
-        )
-    )
-    return fig
-
-def recovery_days_by_cycle_chart(cycles_df: pd.DataFrame) -> go.Figure:
-    if cycles_df is None or cycles_df.empty:
-        fig = go.Figure()
-        fig.update_layout(
-            **_base_layout(300),
-            title=dict(text="Recovery Days by Drawdown Cycle", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
-            annotations=[dict(
-                text="No drawdown cycles found",
-                x=0.5, y=0.5, xref="paper", yref="paper",
-                showarrow=False, font=dict(size=13, color=INK_LIGHT)
-            )]
-        )
-        return fig
-
-    df = cycles_df.copy()
-    df["cycle_label"] = df["peak_date"].dt.strftime("%Y-%m")
-    df["bar_value"] = df["days_to_recover"].fillna(df["time_under_water_days"])
-    df["bar_color"] = np.where(df["recovered"], "rgba(77,124,91,0.80)", "rgba(148,72,72,0.70)")
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df["cycle_label"],
-        y=df["bar_value"],
-        marker_color=df["bar_color"],
-        hovertemplate="<b>%{x}</b><br>Days: %{y:.0f}<extra></extra>",
-    ))
-
-    base = _base_layout(300).copy()
-    base.pop("xaxis", None)
-    base.pop("yaxis", None)
-
-    fig.update_layout(
-        **base,
-        title=dict(text="Recovery Days by Drawdown Cycle", x=0.5, xanchor="center", font=dict(size=15, color=INK)),
-        showlegend=False,
-        xaxis=dict(showgrid=False, tickangle=-45, tickfont=dict(size=10, color=INK_LIGHT)),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor=GRID,
-            tickfont=dict(size=10, color=INK_LIGHT),
-            title="Days",
-            title_font=dict(size=11, color=INK_MID)
-        )
-    )
-    return fig
-
-def recovery_summary_html(d: dict, symbol: str, cycles_df: pd.DataFrame) -> str:
-    median_rec = None
-    avg_tuw_days = None
-
-    if cycles_df is not None and not cycles_df.empty:
-        recovered = cycles_df[cycles_df["recovered"] == True]
-        median_rec = float(recovered["days_to_recover"].median()) if not recovered.empty else None
-        avg_tuw_days = float(cycles_df["time_under_water_days"].mean()) if not cycles_df.empty else None
-
-    rows = [
-        ("Max Drawdown", fmt_pct(d.get("mdd"))),
-        ("Ulcer Index", fmt_num(d.get("ulcer_index"))),
-        ("Time Under Water", fmt_pct(d.get("pct_time_under_water"))),
-        ("Recovery Success", fmt_pct(d.get("recovery_success_ratio"))),
-        ("Avg Recovery Days", fmt_num(d.get("avg_recovery_days"), 1)),
-        ("Median Recovery Days", fmt_num(median_rec, 1)),
-        ("Max Recovery Days", fmt_num(d.get("max_recovery_days"), 1)),
-        ("Avg TUW Days", fmt_num(avg_tuw_days, 1)),
-        ("Recovery Efficiency", fmt_num(d.get("recovery_efficiency"), 6)),
-    ]
-
-    html_rows = "".join(
-        f'<div class="summary-row"><div class="summary-label">{label}</div><div class="summary-value">{value}</div></div>'
-        for label, value in rows
-    )
-
-    return f"""
-    <div class="summary-card">
-      <div class="summary-title">{symbol} · Recovery Summary</div>
-      {html_rows}
-    </div>
-    """
-
-# ═══════════════════════════════════════════════════════════════
-# RISK SCORE
+# RISK GAUGE
 # ═══════════════════════════════════════════════════════════════
 
 def risk_score(d: dict) -> tuple[int, str, str]:
+    """
+    Recovery-Path Risk Score (0 = low risk, 100 = high risk).
+    Mirrors the Radar 'Risk' factor but expressed as a penalty score.
+    Primary: MDD depth, Time Under Water, Recovery Speed, Recovery Success.
+    Secondary: Volatility, Beta, Balance Sheet.
+    """
     score = 0
 
-    zscore = d.get("zscore")
-    if zscore is not None:
-        if zscore < 1.8:
-            score += 20
-        elif zscore < 3.0:
-            score += 10
-
-    debt_eq = d.get("debt_eq")
-    if debt_eq is not None:
-        if debt_eq > 2.0:
-            score += 15
-        elif debt_eq > 1.0:
-            score += 8
-
+    # ── MDD depth (primary, max 22pts) ───────────────────────────
     mdd = d.get("mdd")
     if mdd is not None:
-        if abs(mdd) > 0.60:
-            score += 20
-        elif abs(mdd) > 0.40:
-            score += 12
-        elif abs(mdd) > 0.25:
-            score += 6
+        if abs(mdd) > 0.60:   score += 22
+        elif abs(mdd) > 0.40: score += 14
+        elif abs(mdd) > 0.25: score += 7
 
-    tuw = d.get("pct_time_under_water")
-    if tuw is not None:
-        if tuw > 0.70:
-            score += 18
-        elif tuw > 0.50:
-            score += 10
-        elif tuw > 0.35:
-            score += 5
-
-    avg_rec = d.get("avg_recovery_days")
-    if avg_rec is not None:
-        if avg_rec > 180:
-            score += 18
-        elif avg_rec > 90:
-            score += 10
-        elif avg_rec > 45:
-            score += 5
-
-    rec_success = d.get("recovery_success_ratio")
-    if rec_success is not None:
-        if rec_success < 0.40:
-            score += 15
-        elif rec_success < 0.65:
-            score += 8
-
+    # ── Ulcer Index — depth × duration (max 18pts) ───────────────
     ulcer = d.get("ulcer_index")
     if ulcer is not None:
-        if ulcer > 25:
-            score += 15
-        elif ulcer > 15:
-            score += 8
+        if ulcer > 25:   score += 18
+        elif ulcer > 15: score += 10
+        elif ulcer > 8:  score += 5
 
+    # ── Time Under Water (max 16pts) ─────────────────────────────
+    tuw = d.get("pct_time_under_water")
+    if tuw is not None:
+        if tuw > 0.70:   score += 16
+        elif tuw > 0.50: score += 9
+        elif tuw > 0.35: score += 4
+
+    # ── Recovery success rate (max 14pts) ────────────────────────
+    rec_success = d.get("recovery_success_ratio")
+    if rec_success is not None:
+        if rec_success < 0.40:   score += 14
+        elif rec_success < 0.65: score += 7
+
+    # ── Avg recovery days (max 12pts) ────────────────────────────
+    avg_rec = d.get("avg_recovery_days")
+    if avg_rec is not None:
+        if avg_rec > 200:  score += 12
+        elif avg_rec > 90: score += 7
+        elif avg_rec > 45: score += 3
+
+    # ── Balance sheet (max 10pts) ────────────────────────────────
+    zscore = d.get("zscore")
+    if zscore is not None:
+        if zscore < 1.8:  score += 10
+        elif zscore < 3.0: score += 5
+
+    deq = d.get("debt_eq")
+    if deq is not None:
+        if deq > 3.0:   score += 8
+        elif deq > 1.5: score += 4
+
+    # ── Volatility secondary (max 8pts) ──────────────────────────
     vol = d.get("vol")
     if vol is not None:
-        if vol > 0.55:
-            score += 8
-        elif vol > 0.35:
-            score += 4
+        if vol > 0.55:   score += 8
+        elif vol > 0.35: score += 4
 
     score = min(score, 100)
-
-    if score <= 20:
-        return score, "Low", RISE
-    if score <= 40:
-        return score, "Moderate", GOLD
-    if score <= 60:
-        return score, "Elevated", CAUTION
+    if score <= 18:   return score, "Low",      RISE
+    if score <= 38:   return score, "Moderate", GOLD
+    if score <= 58:   return score, "Elevated", CAUTION
     return score, "High", FALL
 
 # ═══════════════════════════════════════════════════════════════
-# DETAIL VIEW
+# SECTION: SINGLE TICKER DETAIL
 # ═══════════════════════════════════════════════════════════════
 
 def render_ticker_detail(symbol: str, years: int):
@@ -1518,127 +1677,110 @@ def render_ticker_detail(symbol: str, years: int):
         d = fetch_ticker_data(symbol)
 
     if "error" in d and not d.get("name"):
-        st.error(f"⚠️ Could not load **{symbol}**: {d['error']}")
+        st.error(f"⚠️  Could not load **{symbol}**: {d['error']}")
+        st.info("Try refreshing, or check the ticker symbol (e.g. BMW.DE for BMW on XETRA).")
         return
 
-    cur = cur_sym(d.get("currency", "USD"))
+    cur  = cur_sym(d.get("currency", "USD"))
     prices = d.get("prices", [])
 
+    # ── Hero ────────────────────────────────────────────────────
     st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
     col_name, col_price = st.columns([2, 1])
 
     with col_name:
-        meta = " · ".join(filter(None, [d.get("exchange", ""), d.get("sector", ""), d.get("industry", "")]))
+        exchange_label = d.get("exchange","") or ""
+        sector_label   = d.get("sector","") or ""
+        industry_label = d.get("industry","") or ""
+        meta = " · ".join(filter(None, [exchange_label, sector_label, industry_label]))
         if meta:
             st.markdown(
-                f'<div style="font-size:11px;color:{GOLD};letter-spacing:.2em;text-transform:uppercase;margin-bottom:4px;">{meta}</div>',
-                unsafe_allow_html=True
+                f'<div style="font-size:11px;color:{GOLD};letter-spacing:.2em;'
+                f'text-transform:uppercase;font-family:Outfit,sans-serif;margin-bottom:4px;">'
+                f'{meta}</div>', unsafe_allow_html=True
             )
         st.markdown(
-            f'<div class="hero-name">{d.get("name", symbol)}</div><div class="hero-ticker">{symbol}</div>',
+            f'<div class="hero-name">{d.get("name", symbol)}</div>'
+            f'<div class="hero-ticker">{symbol}</div>',
             unsafe_allow_html=True
         )
         if d.get("bio"):
             st.markdown(
-                f'<p style="font-size:13px;color:{INK_MID};line-height:1.75;max-width:560px;margin-top:12px;">{d["bio"][:450]}...</p>',
+                f'<p style="font-size:13px;color:{INK_MID};line-height:1.75;'
+                f'max-width:560px;margin-top:12px;font-weight:300;'
+                f'display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;'
+                f'overflow:hidden;">{d["bio"]}</p>',
                 unsafe_allow_html=True
             )
 
     with col_price:
-        if d.get("price"):
+        price = d.get("price")
+        mc    = d.get("mkt_cap")
+        if price:
             st.markdown(
                 f'<div style="text-align:right;">'
-                f'<div style="font-size:9px;color:{GOLD};letter-spacing:.2em;text-transform:uppercase;">Current Price</div>'
-                f'<div class="hero-price">{cur}{d["price"]:,.2f}</div>'
-                f'<div style="font-size:11px;color:{INK_LIGHT};margin-top:6px;">Cap {fmt_big(d.get("mkt_cap"), cur)} · {d.get("currency","USD")}</div>'
+                f'<div style="font-size:9px;color:{GOLD};letter-spacing:.2em;'
+                f'text-transform:uppercase;font-family:Outfit,sans-serif;">Current Price</div>'
+                f'<div class="hero-price">{cur}{price:,.2f}</div>'
+                f'<div style="font-size:11px;color:{INK_LIGHT};margin-top:6px;">'
+                f'Cap {fmt_big(mc, cur)} · {d.get("currency","USD")}</div>'
                 f'</div>',
                 unsafe_allow_html=True
             )
 
     st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
 
-    pe, ps, pb = d.get("pe"), d.get("ps"), d.get("pb")
-    dy, beta, vol = d.get("div_yield") or 0, d.get("beta"), d.get("vol")
-
-        # ── KPI Row ─────────────────────────────────────────────────
+    # ── KPI Row ─────────────────────────────────────────────────
     k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
-
-    pe = d.get("pe")
-    ps = d.get("ps")
-    pb = d.get("pb")
-    dy = d.get("div_yield") or 0
+    pe  = d.get("pe")
+    ps  = d.get("ps")
+    pb  = d.get("pb")
+    dy  = d.get("div_yield") or 0
+    po  = d.get("payout") or 0
     beta = d.get("beta")
-    vol = d.get("vol")
+    vol  = d.get("vol")
+    sharpe = d.get("sharpe")
 
     with k1:
         delta_pe = "Undervalued" if pe and pe < 10 else ("Premium" if pe and pe > 50 else None)
-        st.metric(
-            "P/E",
-            f"{pe:.1f}×" if pe else "—",
-            delta=delta_pe,
-            delta_color="normal" if delta_pe == "Undervalued"
-            else ("inverse" if delta_pe == "Premium" else "off")
-        )
-
+        st.metric("P/E", f"{pe:.1f}×" if pe else "—", delta=delta_pe,
+                  delta_color="normal" if delta_pe == "Undervalued" else
+                  ("inverse" if delta_pe == "Premium" else "off"))
     with k2:
         st.metric("P/S", f"{ps:.1f}×" if ps else "—")
-
     with k3:
         below_book = "Below book" if pb and pb < 1 else None
-        st.metric(
-            "P/B",
-            f"{pb:.1f}×" if pb else "—",
-            delta=below_book,
-            delta_color="normal" if below_book else "off"
-        )
-
+        st.metric("P/B", f"{pb:.1f}×" if pb else "—",
+                  delta=below_book, delta_color="normal" if below_book else "off")
     with k4:
-        st.metric("DIV. YIELD", fmt_pct(dy) if dy else "—")
-
+        st.metric("Div. Yield", fmt_pct(dy) if dy else "—")
     with k5:
         d52l_val = d.get("dist_52w_low")
-        st.metric(
-            "VS 52W LOW",
-            f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—",
-            delta=(
-                "Near low ⚠" if d52l_val is not None and d52l_val < 0.05 else
-                "Strong cushion" if d52l_val is not None and d52l_val > 0.30 else None
-            ),
-            delta_color=(
-                "inverse" if d52l_val is not None and d52l_val < 0.05 else
-                "normal" if d52l_val is not None and d52l_val > 0.30 else "off"
-            )
-        )
-
+        st.metric("vs 52w Low",
+                  f"+{d52l_val*100:.1f}%" if d52l_val is not None else "—",
+                  delta=("Near low ⚠" if d52l_val is not None and d52l_val < 0.05 else
+                         "Strong cushion" if d52l_val is not None and d52l_val > 0.3 else None),
+                  delta_color=("inverse" if d52l_val is not None and d52l_val < 0.05 else
+                               "normal" if d52l_val is not None and d52l_val > 0.3 else "off"))
     with k6:
         beta_note = "High β" if beta and beta > 1.5 else ("Defensive" if beta and beta < 0.8 else None)
-        st.metric(
-            "BETA (B)",
-            f"{beta:.2f}" if beta else "—",
-            delta=beta_note,
-            delta_color=(
-                "inverse" if beta_note == "High β" else
-                "normal" if beta_note == "Defensive" else "off"
-            )
-        )
-
+        st.metric("Beta (β)", f"{beta:.2f}" if beta else "—",
+                  delta=beta_note,
+                  delta_color="inverse" if beta_note == "High β" else
+                  ("normal" if beta_note == "Defensive" else "off"))
     with k7:
-        st.metric("VOLATILITY", fmt_pct(vol), delta_color="off")
-
+        st.metric("Volatility", fmt_pct(vol), delta_color="off")
     with k8:
         d52h_val = d.get("dist_52w_high")
-        st.metric(
-            "VS 52W HIGH",
-            f"{d52h_val*100:.1f}%" if d52h_val is not None else "—",
-            delta=(
-                "At peak 🔝" if d52h_val is not None and abs(d52h_val) < 0.03 else
-                f"{abs(d52h_val)*100:.0f}% off high" if d52h_val is not None else None
-            ),
-            delta_color=("normal" if d52h_val is not None and abs(d52h_val) < 0.03 else "off")
-        )
+        st.metric("vs 52w High",
+                  f"{d52h_val*100:.1f}%" if d52h_val is not None else "—",
+                  delta=("At peak 🔝" if d52h_val is not None and abs(d52h_val) < 0.03 else
+                         f"{abs(d52h_val)*100:.0f}% off high" if d52h_val else None),
+                  delta_color=("normal" if d52h_val is not None and abs(d52h_val) < 0.03 else "off"))
 
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
+    # ── Charts ──────────────────────────────────────────────────
     r52_fig = range_52w_chart(d)
     if r52_fig is not None:
         col_chart, col_52w, col_income = st.columns([1.1, 0.45, 0.75])
@@ -1647,299 +1789,423 @@ def render_ticker_detail(symbol: str, years: int):
         col_52w = None
 
     with col_chart:
-        st.markdown('<div class="section-header">Price History</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header">Price History · {years}Y</div>',
+                    unsafe_allow_html=True)
         st.plotly_chart(
             price_chart(prices, symbol, d.get("currency", "USD"), years),
-            use_container_width=True,
-            config={"displayModeBar": False}
+            use_container_width=True, config={"displayModeBar": False}
         )
 
     if col_52w is not None:
         with col_52w:
-            st.markdown('<div class="section-header">52-Week Range</div>', unsafe_allow_html=True)
-            st.plotly_chart(r52_fig, use_container_width=True, config={"displayModeBar": False})
+            st.markdown('<div class="section-header">52-Week Range</div>',
+                        unsafe_allow_html=True)
+            st.plotly_chart(r52_fig, use_container_width=True,
+                            config={"displayModeBar": False})
 
     with col_income:
-        st.markdown('<div class="section-header">Income Statement (TTM)</div>', unsafe_allow_html=True)
-        st.plotly_chart(income_chart(d), use_container_width=True, config={"displayModeBar": False})
-
-    # Recovery Dashboard
-    cycles_df = extract_recovery_cycles(prices, years=max(years, 5))
-
-    st.markdown('<div class="section-header" style="margin-top:10px;">Recovery Dashboard</div>', unsafe_allow_html=True)
-    st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
-
-    top_left, top_right = st.columns([1.45, 1.0])
-    with top_left:
+        st.markdown('<div class="section-header">Income Statement (TTM)</div>',
+                    unsafe_allow_html=True)
         st.plotly_chart(
-            price_vs_running_peak_chart(prices, years=max(years, 5)),
-            use_container_width=True,
-            config={"displayModeBar": False}
-        )
-    with top_right:
-        st.markdown(recovery_summary_html(d, symbol, cycles_df), unsafe_allow_html=True)
-
-    bot_left, bot_right = st.columns([1.45, 1.0])
-    with bot_left:
-        st.plotly_chart(
-            drawdown_from_peak_chart(prices, years=max(years, 5)),
-            use_container_width=True,
-            config={"displayModeBar": False}
-        )
-    with bot_right:
-        st.plotly_chart(
-            recovery_days_by_cycle_chart(cycles_df),
-            use_container_width=True,
+            income_chart(d), use_container_width=True,
             config={"displayModeBar": False}
         )
 
+    # ── Factor Radar + Risk Gauge ────────────────────────────────
     score, grade, color = risk_score(d)
+    mdd  = d.get("mdd")
+    zscore_val = d.get("zscore")
+
     radar_fig, factors = factor_radar(d, symbol)
     col_radar, col_risk = st.columns([1, 1])
 
     with col_radar:
-        st.markdown('<div class="section-header">Factor Scorecard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Factor Scorecard</div>',
+                    unsafe_allow_html=True)
         st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
-        st.plotly_chart(radar_fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(radar_fig, use_container_width=True,
+                        config={"displayModeBar": False})
 
     with col_risk:
-        st.markdown('<div class="section-header">Factor Scores</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Factor Scores</div>',
+                    unsafe_allow_html=True)
         st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
+        # Score bars for each factor
         for fname, fscore in factors.items():
             bar_color = RISE if fscore >= 65 else (FALL if fscore <= 35 else GOLD)
             st.markdown(f"""
             <div style="margin-bottom:14px;">
-              <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
-                <span style="font-size:11px;color:{INK_MID};font-weight:500;">{fname}</span>
-                <span style="font-size:16px;font-weight:600;color:{bar_color};">{fscore}</span>
+              <div style="display:flex;justify-content:space-between;
+                   margin-bottom:5px;">
+                <span style="font-family:Outfit,sans-serif;font-size:11px;
+                      color:{INK_MID};font-weight:500;">{fname}</span>
+                <span style="font-family:'Cormorant Garamond',serif;font-size:16px;
+                      font-weight:600;color:{bar_color};">{fscore}</span>
               </div>
               <div style="height:5px;background:#EDE8DF;border-radius:3px;overflow:hidden;">
-                <div style="width:{fscore}%;height:100%;background:{bar_color};border-radius:3px;"></div>
+                <div style="width:{fscore}%;height:100%;background:{bar_color};
+                     border-radius:3px;transition:width .6s ease;"></div>
               </div>
             </div>
             """, unsafe_allow_html=True)
 
+        # Composite Risk
         st.markdown(f"""
         <div style="margin-top:20px;padding:16px 20px;background:{WHITE};
              border:1px solid #DDD8CE;border-radius:12px;">
-          <div style="font-size:9px;color:{INK_LIGHT};letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px;">Path Risk Profile</div>
-          <div style="font-size:24px;font-weight:600;color:{color};">{grade} Risk</div>
-          <div style="height:6px;background:#EDE8DF;border-radius:3px;overflow:hidden;margin-top:10px;">
-            <div style="width:{min(score,100)}%;height:100%;background:linear-gradient(90deg,{RISE},{CAUTION},{FALL});border-radius:3px;"></div>
+          <div style="font-size:9px;color:{INK_LIGHT};letter-spacing:.16em;
+               text-transform:uppercase;font-family:Outfit,sans-serif;
+               margin-bottom:6px;">Composite Risk Profile</div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:24px;
+               font-weight:600;color:{color};">{grade} Risk</div>
+          <div style="height:6px;background:#EDE8DF;border-radius:3px;
+               overflow:hidden;margin-top:10px;">
+            <div style="width:{min(score,100)}%;height:100%;
+                 background:linear-gradient(90deg,{RISE},{CAUTION},{FALL});
+                 border-radius:3px;"></div>
           </div>
-          <div style="font-size:11px;color:{INK_LIGHT};margin-top:6px;">Score: <b style="color:{color};">{score}/100</b></div>
+          <div style="font-size:11px;color:{INK_LIGHT};font-family:Outfit,sans-serif;
+               margin-top:6px;">Score: <b style="color:{color};">{score}/100</b></div>
         </div>
         """, unsafe_allow_html=True)
 
-    tabs = st.tabs(["📐 Valuation", "📊 Profitability", "🛡 Risk Metrics"])
+    # ── Detailed Tables ─────────────────────────────────────────
+    tabs = st.tabs(["📐 Valuation", "📊 Profitability", "🛡  Risk Metrics", "🔄 Recovery Dashboard"])
 
     with tabs[0]:
+        ev = d.get("ev"); evr = d.get("ev_rev"); eve = d.get("ev_ebitda")
         rows = [
-            {"Metric": "Enterprise Value", "Value": fmt_big(d.get("ev"), cur), "Signal": _sig(None), "Comment": "Total firm value incl. debt"},
-            {"Metric": "Trailing P/E", "Value": f"{pe:.1f}×" if pe else "—", "Signal": _sig("good" if pe and pe < 10 else "warn" if pe and pe > 50 else None), "Comment": ""},
-            {"Metric": "EV / Revenue", "Value": f"{d.get('ev_rev'):.1f}×" if d.get("ev_rev") else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "EV / EBITDA", "Value": f"{d.get('ev_ebitda'):.1f}×" if d.get("ev_ebitda") else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Price / Book", "Value": f"{pb:.1f}×" if pb else "—", "Signal": _sig("good" if pb and pb < 1 else None), "Comment": ""},
-            {"Metric": "Price / Sales", "Value": f"{ps:.1f}×" if ps else "—", "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Dividend Yield", "Value": fmt_pct(dy), "Signal": _sig("good" if dy and dy > 0.05 else None), "Comment": ""},
+            {"Metric": "Enterprise Value",
+             "Value": fmt_big(ev, cur), "Signal": _sig(None),
+             "Comment": "Total firm value incl. debt"},
+            {"Metric": "Trailing P/E",
+             "Value": f"{pe:.1f}×" if pe else "—",
+             "Signal": _sig("good" if pe and pe < 12 else "warn" if pe and pe > 35 else "bad" if pe and pe > 60 else None),
+             "Comment": ("Attractive valuation" if pe and pe < 12
+                         else "Growth premium" if pe and pe > 35
+                         else "Extreme premium" if pe and pe > 60 else "Fair range")},
+            {"Metric": "EV / Revenue",
+             "Value": f"{evr:.1f}×" if evr else "—",
+             "Signal": _sig("good" if evr and evr < 2 else "warn" if evr and evr > 10 else None),
+             "Comment": ("Cheap on revenue" if evr and evr < 2
+                         else "Premium revenue multiple" if evr and evr > 10 else "")},
+            {"Metric": "EV / EBITDA",
+             "Value": f"{eve:.1f}×" if eve else "—",
+             "Signal": _sig("good" if eve and eve < 10 else "warn" if eve and eve > 25 else "bad" if eve and eve > 45 else None),
+             "Comment": ("Undervalued on EBITDA" if eve and eve < 10
+                         else "Growth priced in" if eve and eve > 25 else "")},
+            {"Metric": "Price / Book",
+             "Value": f"{pb:.1f}×" if pb else "—",
+             "Signal": _sig("good" if pb and pb < 1 else "warn" if pb and pb > 5 else None),
+             "Comment": "Below book value" if pb and pb < 1 else "High P/B" if pb and pb > 5 else ""},
+            {"Metric": "Price / Sales",
+             "Value": f"{ps:.1f}×" if ps else "—",
+             "Signal": _sig("good" if ps and ps < 1.5 else "warn" if ps and ps > 8 else None),
+             "Comment": ("Cheap on sales" if ps and ps < 1.5
+                         else "Premium P/S" if ps and ps > 8 else "")},
+            {"Metric": "Dividend Yield",
+             "Value": fmt_pct(dy),
+             "Signal": _sig("good" if dy and dy > 0.03 else "warn" if dy and dy > 0.01 else None),
+             "Comment": ("High yield" if dy and dy > 0.05
+                         else "Moderate yield" if dy and dy > 0.03
+                         else "Low yield" if dy and dy > 0 else "No dividend")},
         ]
         _render_table(rows)
 
     with tabs[1]:
+        pm  = d.get("profit_margin")
+        roa = d.get("roa")
+        roe = d.get("roe")
+        rev = d.get("revenue"); ni = d.get("net_income"); ebitda = d.get("ebitda")
+        gp  = d.get("gross_profit")
         rows = [
-            {"Metric": "Profit Margin", "Value": fmt_pct(d.get("profit_margin")), "Signal": _sig("good" if d.get("profit_margin") and d["profit_margin"] > 0.2 else None), "Comment": ""},
-            {"Metric": "Return on Assets", "Value": fmt_pct(d.get("roa")), "Signal": _sig("good" if d.get("roa") and d["roa"] > 0.1 else None), "Comment": ""},
-            {"Metric": "Return on Equity", "Value": fmt_pct(d.get("roe")), "Signal": _sig("good" if d.get("roe") and d["roe"] > 0.25 else None), "Comment": ""},
-            {"Metric": "Revenue (TTM)", "Value": fmt_big(d.get("revenue"), cur), "Signal": _sig(None), "Comment": ""},
-            {"Metric": "Net Income (TTM)", "Value": fmt_big(d.get("net_income"), cur), "Signal": _sig("good" if d.get("net_income") and d["net_income"] > 0 else "bad" if d.get("net_income") and d["net_income"] < 0 else None), "Comment": ""},
-            {"Metric": "EBITDA", "Value": fmt_big(d.get("ebitda"), cur), "Signal": _sig(None), "Comment": ""},
+            {"Metric": "Profit Margin",
+             "Value": fmt_pct(pm),
+             "Signal": _sig("good" if pm and pm > 0.20 else
+                            "warn" if pm and pm > 0.05 else
+                            "bad"  if pm is not None and pm <= 0.05 else None),
+             "Comment": ("Exceptional margin" if pm and pm > 0.25
+                         else "Healthy margin" if pm and pm > 0.10
+                         else "Thin margin" if pm and pm > 0 else "Loss-making")},
+            {"Metric": "Return on Assets",
+             "Value": fmt_pct(roa),
+             "Signal": _sig("good" if roa and roa > 0.10 else
+                            "warn" if roa and roa > 0.04 else
+                            "bad"  if roa is not None and roa <= 0 else None),
+             "Comment": ("Strong asset returns" if roa and roa > 0.10
+                         else "Negative ROA" if roa and roa < 0 else "")},
+            {"Metric": "Return on Equity",
+             "Value": fmt_pct(roe),
+             "Signal": _sig("good" if roe and roe > 0.20 else
+                            "warn" if roe and roe > 0.08 else
+                            "bad"  if roe is not None and roe <= 0 else None),
+             "Comment": ("Excellent ROE" if roe and roe > 0.20
+                         else "Negative ROE" if roe and roe < 0 else "")},
+            {"Metric": "Gross Profit",
+             "Value": fmt_big(gp, cur), "Signal": _sig(None), "Comment": ""},
+            {"Metric": "Revenue (TTM)",
+             "Value": fmt_big(rev, cur), "Signal": _sig(None), "Comment": ""},
+            {"Metric": "Net Income (TTM)",
+             "Value": fmt_big(ni, cur),
+             "Signal": _sig("good" if ni and ni > 0 else "bad" if ni and ni < 0 else None),
+             "Comment": "Profitable" if ni and ni > 0 else "Loss-making" if ni and ni < 0 else ""},
+            {"Metric": "EBITDA",
+             "Value": fmt_big(ebitda, cur), "Signal": _sig(None), "Comment": ""},
         ]
         _render_table(rows)
 
     with tabs[2]:
-        median_rec = None
-        avg_tuw_days = None
-        if not cycles_df.empty:
-            recovered = cycles_df[cycles_df["recovered"] == True]
-            median_rec = float(recovered["days_to_recover"].median()) if not recovered.empty else None
-            avg_tuw_days = float(cycles_df["time_under_water_days"].mean()) if not cycles_df.empty else None
+        mdd_val = d.get("mdd")
+        deq = d.get("debt_eq")   # already normalised in fetch (not ×100)
+        cr  = d.get("current_ratio")
+        qr  = d.get("quick_ratio")
+        ic  = d.get("ic")
+        # Recovery-path metrics (pre-computed in _compute_risk)
+        ulcer      = d.get("ulcer_index")
+        tuw        = d.get("pct_time_under_water")
+        avg_rec    = d.get("avg_recovery_days")
+        median_rec = d.get("median_recovery_days")
+        max_rec    = d.get("max_recovery_days")
+        rec_suc    = d.get("recovery_success_ratio")
+        rec_eff    = d.get("recovery_efficiency")
+        dv         = d.get("downside_vol")
+        d52l  = d.get("dist_52w_low")
+        d52h  = d.get("dist_52w_high")
+        w52l  = d.get("w52_low")
+        w52h  = d.get("w52_high")
+        cur_p = d.get("price")
+        low_date  = d.get("w52_low_date")
+        high_date = d.get("w52_high_date")
+        low_days  = d.get("w52_low_days")
+        high_days = d.get("w52_high_days")
 
         def _days_ago(n):
-            if n is None:
-                return ""
-            if n == 0:
-                return "today"
-            if n == 1:
-                return "yesterday"
-            if n < 30:
-                return f"{n}d ago"
-            if n < 365:
-                return f"{n//30}mo ago"
-            return f"{n//365}y {(n % 365)//30}mo ago"
+            if n is None: return ""
+            if n == 0:    return "today"
+            if n == 1:    return "yesterday"
+            if n < 30:    return f"{n}d ago"
+            if n < 365:   return f"{n//30}mo ago"
+            return f"{n//365}y {(n%365)//30}mo ago"
 
-        mdd_val = d.get("mdd")
-        beta_val = d.get("beta")
-        vol_val = d.get("vol")
-        downside_vol = d.get("downside_vol")
-        ulcer = d.get("ulcer_index")
-        tuw = d.get("pct_time_under_water")
-        avg_rec = d.get("avg_recovery_days")
-        max_rec = d.get("max_recovery_days")
-        rec_success = d.get("recovery_success_ratio")
-        rec_eff = d.get("recovery_efficiency")
-        deq = d.get("debt_eq")
-        cr = d.get("current_ratio")
-        qr = d.get("quick_ratio")
-        ic = d.get("ic")
-        zscore_val = d.get("zscore")
-        sharpe = d.get("sharpe")
-        d52l = d.get("dist_52w_low")
-        d52h = d.get("dist_52w_high")
+        # Calmar ratio — now pre-computed in _compute_risk
+        calmar = d.get("calmar")
 
         rows = [
-            {
-                "Metric": "52w Low",
-                "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_low'):,.2f}" if d.get("w52_low") else "—",
-                "Signal": _sig(None),
-                "Comment": f"{d.get('w52_low_date')} · {_days_ago(d.get('w52_low_days'))}" if d.get("w52_low_date") else ""
-            },
-            {
-                "Metric": "Distance to 52w Low",
-                "Value": f"+{d52l*100:.1f}%" if d52l is not None else "—",
-                "Signal": _sig("good" if d52l is not None and d52l < 0.10 else "warn" if d52l is not None and d52l < 0.25 else None),
-                "Comment": "Near 52w low — potential entry" if d52l is not None and d52l < 0.10 else "Moderate distance from low" if d52l is not None and d52l < 0.25 else "Well above 52w low" if d52l is not None else ""
-            },
-            {
-                "Metric": "52w High",
-                "Value": f"{cur_sym(d.get('currency','USD'))}{d.get('w52_high'):,.2f}" if d.get("w52_high") else "—",
-                "Signal": _sig(None),
-                "Comment": f"{d.get('w52_high_date')} · {_days_ago(d.get('w52_high_days'))}" if d.get("w52_high_date") else ""
-            },
-            {
-                "Metric": "Distance from 52w High",
-                "Value": f"{d52h*100:.1f}%" if d52h is not None else "—",
-                "Signal": _sig("good" if d52h is not None and abs(d52h) < 0.05 else "warn" if d52h is not None and abs(d52h) > 0.35 else None),
-                "Comment": "Near 52w high — strong momentum" if d52h is not None and abs(d52h) < 0.05 else f"{abs(d52h)*100:.0f}% off the high" if d52h is not None else ""
-            },
-            {
-                "Metric": "Beta (β)",
-                "Value": fmt_num(beta_val),
-                "Signal": _sig("warn" if beta_val and beta_val > 1.5 else "good" if beta_val and beta_val < 0.8 else None),
-                "Comment": "High sensitivity" if beta_val and beta_val > 1.5 else "Defensive" if beta_val and beta_val < 0.8 else "Near-market" if beta_val is not None else ""
-            },
-            {
-                "Metric": "Annualised Volatility",
-                "Value": fmt_pct(vol_val),
-                "Signal": _sig("bad" if vol_val and vol_val > 0.35 else "good" if vol_val and vol_val < 0.20 else None),
-                "Comment": "Dispersion only; recovery profile is decisive"
-            },
-            {
-                "Metric": "Downside Volatility",
-                "Value": fmt_pct(downside_vol),
-                "Signal": _sig("bad" if downside_vol and downside_vol > 0.28 else "warn" if downside_vol and downside_vol > 0.18 else "good" if downside_vol is not None else None),
-                "Comment": "Negative-return volatility only"
-            },
-            {
-                "Metric": "Max Drawdown",
-                "Value": fmt_pct(mdd_val),
-                "Signal": _sig("bad" if mdd_val and abs(mdd_val) > 0.50 else "warn" if mdd_val and abs(mdd_val) > 0.30 else "good" if mdd_val is not None else None),
-                "Comment": "Worst peak-to-trough loss"
-            },
-            {
-                "Metric": "Ulcer Index",
-                "Value": fmt_num(ulcer),
-                "Signal": _sig("bad" if ulcer and ulcer > 20 else "warn" if ulcer and ulcer > 12 else "good" if ulcer is not None else None),
-                "Comment": "Depth × duration of drawdowns"
-            },
-            {
-                "Metric": "Time Under Water",
-                "Value": fmt_pct(tuw),
-                "Signal": _sig("bad" if tuw and tuw > 0.60 else "warn" if tuw and tuw > 0.40 else "good" if tuw is not None else None),
-                "Comment": "Share of time below prior highs"
-            },
-            {
-                "Metric": "Avg Recovery Days",
-                "Value": fmt_num(avg_rec, 1),
-                "Signal": _sig("bad" if avg_rec and avg_rec > 120 else "warn" if avg_rec and avg_rec > 60 else "good" if avg_rec is not None else None),
-                "Comment": "Average trough-to-prior-peak healing time"
-            },
-            {
-                "Metric": "Median Recovery Days",
-                "Value": fmt_num(median_rec, 1),
-                "Signal": _sig("bad" if median_rec and median_rec > 120 else "warn" if median_rec and median_rec > 60 else "good" if median_rec is not None else None),
-                "Comment": "Median healing time"
-            },
-            {
-                "Metric": "Max Recovery Days",
-                "Value": fmt_num(max_rec, 1),
-                "Signal": _sig("bad" if max_rec and max_rec > 250 else "warn" if max_rec and max_rec > 120 else "good" if max_rec is not None else None),
-                "Comment": "Worst observed healing cycle"
-            },
-            {
-                "Metric": "Avg TUW Days",
-                "Value": fmt_num(avg_tuw_days, 1),
-                "Signal": _sig("bad" if avg_tuw_days and avg_tuw_days > 180 else "warn" if avg_tuw_days and avg_tuw_days > 90 else "good" if avg_tuw_days is not None else None),
-                "Comment": "Average total time below prior highs"
-            },
-            {
-                "Metric": "Recovery Success Rate",
-                "Value": fmt_pct(rec_success),
-                "Signal": _sig("good" if rec_success and rec_success > 0.70 else "warn" if rec_success and rec_success > 0.50 else "bad" if rec_success is not None else None),
-                "Comment": "Share of drawdowns that fully recovered"
-            },
-            {
-                "Metric": "Recovery Efficiency",
-                "Value": fmt_num(rec_eff, 6),
-                "Signal": _sig("good" if rec_eff and rec_eff > 0.0035 else "warn" if rec_eff and rec_eff > 0.0015 else "bad" if rec_eff is not None else None),
-                "Comment": "Drawdown depth healed per recovery day"
-            },
-            {
-                "Metric": "Sharpe Ratio",
-                "Value": fmt_num(sharpe),
-                "Signal": _sig("good" if sharpe and sharpe > 1.3 else "bad" if sharpe and sharpe < 0.8 else None),
-                "Comment": "Classic return/volatility metric"
-            },
-            {
-                "Metric": "Debt / Equity",
-                "Value": fmt_num(deq),
-                "Signal": _sig("bad" if deq and deq > 2 else "good" if deq and deq < 0.5 else None),
-                "Comment": "High leverage" if deq and deq > 2 else "Conservative" if deq and deq < 0.5 else ""
-            },
-            {
-                "Metric": "Current Ratio",
-                "Value": fmt_num(cr),
-                "Signal": _sig("good" if cr and cr > 1.5 else "bad" if cr and cr < 1 else None),
-                "Comment": "Strong liquidity" if cr and cr > 2 else "Liquidity concern" if cr and cr < 1 else ""
-            },
-            {
-                "Metric": "Quick Ratio",
-                "Value": fmt_num(qr),
-                "Signal": _sig("good" if qr and qr > 1.2 else "bad" if qr and qr < 0.8 else None),
-                "Comment": ""
-            },
-            {
-                "Metric": "Interest Coverage",
-                "Value": f"{ic:.1f}×" if ic else "—",
-                "Signal": _sig("good" if ic and ic > 10 else "bad" if ic and ic < 3 else None),
-                "Comment": "Very comfortable" if ic and ic > 20 else "Debt strain" if ic and ic < 3 else ""
-            },
-            {
-                "Metric": "Altman Z-Score",
-                "Value": fmt_num(zscore_val),
-                "Signal": _sig("good" if zscore_val and zscore_val > 3 else "bad" if zscore_val and zscore_val < 1.8 else "warn"),
-                "Comment": "Safe zone" if zscore_val and zscore_val > 3 else "Distress zone" if zscore_val and zscore_val < 1.8 else "Grey zone"
-            },
+            # ── Price Position ──────────────────────────────────────────
+            {"Metric": "52w Low",
+             "Value" : f"{cur_sym(d.get('currency','USD'))}{w52l:,.2f}" if w52l else "—",
+             "Signal": _sig(None),
+             "Comment": (f"{low_date}  ·  {_days_ago(low_days)}" if low_date else
+                         "Lowest price in past 52 weeks")},
+            {"Metric": "Distance to 52w Low",
+             "Value" : f"+{d52l*100:.1f}%" if d52l is not None else "—",
+             # INVERTED: near low = buying opportunity = GREEN
+             "Signal": _sig("good" if d52l is not None and d52l < 0.10
+                            else "warn" if d52l is not None and d52l < 0.25
+                            else None),
+             "Comment": ("Near 52w low — potential entry" if d52l is not None and d52l < 0.10
+                         else "Moderate distance from low" if d52l is not None and d52l < 0.25
+                         else "Well above 52w low")},
+            {"Metric": "52w High",
+             "Value" : f"{cur_sym(d.get('currency','USD'))}{w52h:,.2f}" if w52h else "—",
+             "Signal": _sig(None),
+             "Comment": (f"{high_date}  ·  {_days_ago(high_days)}" if high_date else
+                         "Highest price in past 52 weeks")},
+            {"Metric": "Distance from 52w High",
+             "Value" : f"{d52h*100:.1f}%" if d52h is not None else "—",
+             # Near high = momentum/strength = GREEN; far below = WARN
+             "Signal": _sig("good" if d52h is not None and abs(d52h) < 0.05
+                            else "warn" if d52h is not None and abs(d52h) > 0.35
+                            else None),
+             "Comment": ("Near 52w high — strong momentum" if d52h is not None and abs(d52h) < 0.05
+                         else f"{abs(d52h)*100:.0f}% off the high" if d52h else "")},
+            # ── Market Risk ─────────────────────────────────────────────
+            {"Metric": "Beta (β)",
+             "Value" : fmt_num(beta),
+             "Signal": _sig("bad"  if beta and beta > 2.0
+                            else "warn" if beta and beta > 1.3
+                            else "good" if beta and beta < 0.7 else None),
+             "Comment": ("Very high market sensitivity" if beta and beta > 2.0
+                         else "Above-market exposure" if beta and beta > 1.3
+                         else "Low correlation / defensive" if beta and beta < 0.7
+                         else "Near-market" if beta is not None else "")},
+            {"Metric": "Annualised Volatility",
+             "Value" : fmt_pct(vol),
+             "Signal": _sig("bad"  if vol and vol > 0.50
+                            else "warn" if vol and vol > 0.30
+                            else "good" if vol and vol < 0.18 else None),
+             "Comment": ("Very high swings — speculative" if vol and vol > 0.50
+                         else "Elevated volatility" if vol and vol > 0.30
+                         else "Low volatility" if vol and vol < 0.18 else "Moderate")},
+            {"Metric": "Max Drawdown",
+             "Value" : fmt_pct(mdd_val),
+             "Signal": _sig("bad"  if mdd_val and abs(mdd_val) > 0.55
+                            else "warn" if mdd_val and abs(mdd_val) > 0.30
+                            else "good" if mdd_val is not None and abs(mdd_val) < 0.15 else None),
+             "Comment": ("Severe peak-to-trough loss" if mdd_val and abs(mdd_val) > 0.55
+                         else "Worst peak-to-trough")},
+            {"Metric": "Sharpe Ratio",
+             "Value" : fmt_num(sharpe),
+             "Signal": _sig("good" if sharpe and sharpe > 1.3
+                            else "warn" if sharpe and sharpe > 0.6
+                            else "bad" if sharpe is not None else None),
+             "Comment": ("Excellent risk-adj. return" if sharpe and sharpe > 1.3
+                         else "Poor return per unit risk" if sharpe and sharpe < 0.6 else "")},
+            {"Metric": "Calmar Ratio",
+             "Value" : fmt_num(calmar),
+             "Signal": _sig("good" if calmar and calmar > 1.0
+                            else "warn" if calmar and calmar > 0.3
+                            else "bad" if calmar is not None else None),
+             "Comment": ("Strong return/drawdown profile" if calmar and calmar > 1.0
+                         else "Weak return for drawdown risk" if calmar and calmar < 0.3 else "")},
+            {"Metric": "Downside Volatility",
+             "Value" : fmt_pct(dv),
+             "Signal": _sig("bad"  if dv and dv > 0.30
+                            else "warn" if dv and dv > 0.18
+                            else "good" if dv is not None and dv < 0.12 else None),
+             "Comment": "Negative-return volatility only"},
+            # ── Recovery-Path Risk ───────────────────────────────────────
+            {"Metric": "Ulcer Index",
+             "Value" : fmt_num(ulcer),
+             "Signal": _sig("bad"  if ulcer and ulcer > 20
+                            else "warn" if ulcer and ulcer > 10
+                            else "good" if ulcer is not None and ulcer < 5 else None),
+             "Comment": ("Severe drawdown stress" if ulcer and ulcer > 20
+                         else "Moderate drawdown stress" if ulcer and ulcer > 10
+                         else "Low drawdown stress" if ulcer is not None and ulcer < 5 else "")},
+            {"Metric": "Time Under Water",
+             "Value" : fmt_pct(tuw),
+             "Signal": _sig("bad"  if tuw and tuw > 0.60
+                            else "warn" if tuw and tuw > 0.40
+                            else "good" if tuw is not None and tuw < 0.25 else None),
+             "Comment": ("Mostly underwater — persistent losses" if tuw and tuw > 0.60
+                         else "Frequently below prior highs" if tuw and tuw > 0.40
+                         else "Rarely underwater" if tuw is not None and tuw < 0.25 else "")},
+            {"Metric": "Avg Recovery Days",
+             "Value" : (f"{avg_rec:.0f}d  ({avg_rec/30:.1f}mo)" if avg_rec else "—"),
+             "Signal": _sig("bad"  if avg_rec and avg_rec > 180
+                            else "warn" if avg_rec and avg_rec > 60
+                            else "good" if avg_rec is not None and avg_rec < 30 else None),
+             "Comment": "Avg trough → prior peak"},
+            {"Metric": "Median Recovery Days",
+             "Value" : (f"{median_rec:.0f}d" if median_rec else "—"),
+             "Signal": _sig("bad"  if median_rec and median_rec > 180
+                            else "warn" if median_rec and median_rec > 60
+                            else "good" if median_rec is not None and median_rec < 30 else None),
+             "Comment": "Typical healing time"},
+            {"Metric": "Max Recovery Days",
+             "Value" : (f"{max_rec:.0f}d  ({max_rec/30:.1f}mo)" if max_rec else "—"),
+             "Signal": _sig("bad"  if max_rec and max_rec > 365
+                            else "warn" if max_rec and max_rec > 120
+                            else "good" if max_rec is not None and max_rec < 45 else None),
+             "Comment": "Worst observed healing cycle"},
+            {"Metric": "Recovery Success Rate",
+             "Value" : fmt_pct(rec_suc),
+             "Signal": _sig("good" if rec_suc and rec_suc > 0.75
+                            else "warn" if rec_suc and rec_suc > 0.50
+                            else "bad" if rec_suc is not None else None),
+             "Comment": ("Most drawdowns fully healed" if rec_suc and rec_suc > 0.75
+                         else "Many drawdowns unresolved" if rec_suc and rec_suc < 0.50 else "")},
+            {"Metric": "Recovery Efficiency",
+             "Value" : (f"{rec_eff*100:.3f}%/day" if rec_eff else "—"),
+             "Signal": _sig("good" if rec_eff and rec_eff > 0.003
+                            else "warn" if rec_eff and rec_eff > 0.001
+                            else "bad" if rec_eff is not None else None),
+             "Comment": "Drawdown depth recovered per day"},
+            # ── Balance Sheet Risk ───────────────────────────────────────
+            {"Metric": "Debt / Equity",
+             "Value" : fmt_num(deq),
+             "Signal": _sig("bad"  if deq and deq > 3.0
+                            else "warn" if deq and deq > 1.5
+                            else "good" if deq is not None and deq < 0.4 else None),
+             "Comment": ("Very high leverage" if deq and deq > 3.0
+                         else "Elevated leverage" if deq and deq > 1.5
+                         else "Conservative balance sheet" if deq is not None and deq < 0.4 else "")},
+            {"Metric": "Current Ratio",
+             "Value" : fmt_num(cr),
+             "Signal": _sig("good" if cr and cr > 2.0
+                            else "warn" if cr and cr > 1.0
+                            else "bad" if cr is not None else None),
+             "Comment": ("Strong liquidity" if cr and cr > 2.0
+                         else "Liquidity concern" if cr and cr < 1.0 else "Adequate")},
+            {"Metric": "Quick Ratio",
+             "Value" : fmt_num(qr) if qr else "—",
+             "Signal": _sig("good" if qr and qr > 1.2
+                            else "warn" if qr and qr > 0.7
+                            else "bad" if qr is not None else None),
+             "Comment": ("Strong acid test" if qr and qr > 1.2
+                         else "Below 1 — watch closely" if qr and qr < 0.7 else "")},
+            {"Metric": "Interest Coverage",
+             "Value" : f"{ic:.1f}×" if ic else "—",
+             "Signal": _sig("good" if ic and ic > 8
+                            else "warn" if ic and ic > 3
+                            else "bad" if ic is not None else None),
+             "Comment": ("Comfortable — debt well covered" if ic and ic > 8
+                         else "Debt strain — coverage thin" if ic and ic < 3 else "Adequate")},
+            {"Metric": "Altman Z-Score",
+             "Value" : fmt_num(zscore_val),
+             "Signal": _sig("good" if zscore_val and zscore_val > 3.0
+                            else "warn" if zscore_val and zscore_val > 1.8
+                            else "bad" if zscore_val is not None else None),
+             "Comment": ("Safe zone (>3.0)" if zscore_val and zscore_val > 3.0
+                         else "Grey zone (1.8–3.0)" if zscore_val and zscore_val > 1.8
+                         else "Distress zone (<1.8)" if zscore_val is not None else "")},
         ]
-
         _render_table(rows)
 
+    # ── Tab 4: Recovery Dashboard ────────────────────────────────
+    with tabs[3]:
+        rec_years = max(years, 5)
+        st.markdown(
+            f'<div class="section-header">Price vs Running Peak · Drawdown from Peak · {rec_years}Y</div>',
+            unsafe_allow_html=True)
+        st.markdown('<div class="gold-rule" style="margin-bottom:12px;"></div>',
+                    unsafe_allow_html=True)
+
+        col_chart_r, col_summary = st.columns([1.5, 1.0])
+        with col_chart_r:
+            st.plotly_chart(
+                recovery_dashboard_chart(prices, symbol, rec_years),
+                use_container_width=True, config={"displayModeBar": False}
+            )
+            st.markdown(
+                '<div class="section-header" style="margin-top:8px;">Recovery Days by Cycle</div>',
+                unsafe_allow_html=True)
+            st.plotly_chart(
+                recovery_cycle_bar_chart(prices, rec_years),
+                use_container_width=True, config={"displayModeBar": False}
+            )
+        with col_summary:
+            st.markdown(recovery_metrics_html(d, symbol), unsafe_allow_html=True)
+
+# ─── Table render helper ─────────────────────────────────────────────────────
+
+def _sig(tone):
+    return {"good": "🟢", "bad": "🔴", "warn": "🟡", None: ""}[tone]
+
+def _render_table(rows: list[dict]):
+    df = pd.DataFrame(rows)
+    df = df[df["Value"] != "—"]
+    st.dataframe(
+        df,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Signal" : st.column_config.TextColumn("", width="small"),
+            "Metric" : st.column_config.TextColumn("Metric", width="medium"),
+            "Value"  : st.column_config.TextColumn("Value",  width="small"),
+            "Comment": st.column_config.TextColumn("Assessment"),
+        },
+    )
+
 # ═══════════════════════════════════════════════════════════════
-# COMPARISON
+# SECTION: COMPARISON VIEW
 # ═══════════════════════════════════════════════════════════════
 
 def render_comparison(symbols: list[str], years: int):
     st.markdown('<div class="gold-rule"></div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="section-header">Cross-Comparison · {len(symbols)} Securities · Live</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">Cross-Comparison · {len(symbols)} Securities · Live</div>',
+                unsafe_allow_html=True)
 
     with st.spinner("Loading comparison data…"):
         all_data = []
@@ -1951,60 +2217,76 @@ def render_comparison(symbols: list[str], years: int):
         progress.empty()
 
     valid = [d for d in all_data if "error" not in d or d.get("price")]
+
     if len(valid) < 2:
         st.warning("Need at least 2 valid tickers for comparison.")
         return
 
-    st.markdown(f'<div class="section-header">Indexed Returns (Base = 100, {years}Y)</div>', unsafe_allow_html=True)
-    st.plotly_chart(portfolio_returns_chart(valid, years), use_container_width=True, config={"displayModeBar": False})
+    # Normalised returns chart
+    st.markdown(f'<div class="section-header">Indexed Returns (Base = 100, {years}Y)</div>',
+                unsafe_allow_html=True)
+    st.plotly_chart(portfolio_returns_chart(valid, years),
+                    use_container_width=True, config={"displayModeBar": False})
 
+    # Bar-chart grid — 3 columns × 3 rows
     col_charts = st.columns(3)
     metrics_viz = [
-        ("pe", "P/E Ratio"),
+        # Row 1: Valuation + Quality
+        ("pe",            "P/E Ratio"),
         ("profit_margin", "Profit Margin"),
-        ("roe", "Return on Equity"),
-        ("vol", "Annualised Volatility"),
-        ("ulcer_index", "Ulcer Index"),
-        ("pct_time_under_water", "Time Under Water"),
+        ("roe",           "Return on Equity"),
+        # Row 2: Risk profile
+        ("vol",           "Annualised Volatility"),
+        ("mdd",           "Max Drawdown"),
+        ("ulcer_index",   "Ulcer Index"),
+        # Row 3: Recovery
+        ("pct_time_under_water",  "Time Under Water"),
+        ("avg_recovery_days",     "Avg Recovery Days"),
+        ("recovery_success_ratio","Recovery Success Rate"),
     ]
     for i, (key, label) in enumerate(metrics_viz):
         with col_charts[i % 3]:
-            st.plotly_chart(comparison_chart(valid, key, label), use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(comparison_chart(valid, key, label),
+                            use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div class="section-header">Summary Table</div>', unsafe_allow_html=True)
+    # Summary table
+    st.markdown('<div class="section-header">Summary Table</div>',
+                unsafe_allow_html=True)
     rows = []
     for d in valid:
         cur = cur_sym(d.get("currency", "USD"))
         sc, grade, _ = risk_score(d)
+        avg_rec = d.get("avg_recovery_days")
         rows.append({
-            "Ticker": d["symbol"],
-            "Name": (d.get("name") or d["symbol"])[:28],
-            "Price": f'{cur}{d["price"]:,.2f}' if d.get("price") else "—",
-            "Mkt Cap": fmt_big(d.get("mkt_cap"), cur),
-            "P/E": f'{d["pe"]:.1f}×' if d.get("pe") else "—",
-            "P/B": f'{d["pb"]:.1f}×' if d.get("pb") else "—",
-            "Div Yield": fmt_pct(d.get("div_yield")),
-            "Profit Mg.": fmt_pct(d.get("profit_margin")),
-            "ROE": fmt_pct(d.get("roe")),
-            "EV/EBITDA": f'{d["ev_ebitda"]:.1f}×' if d.get("ev_ebitda") else "—",
-            "Beta": fmt_num(d.get("beta")),
-            "D/E": fmt_num(d.get("debt_eq")),
-            "Volatility": fmt_pct(d.get("vol")),
-            "Ulcer": fmt_num(d.get("ulcer_index")),
-            "TUW": fmt_pct(d.get("pct_time_under_water")),
-            "Avg Rec Days": fmt_num(d.get("avg_recovery_days"), 1),
-            "Recovery %": fmt_pct(d.get("recovery_success_ratio")),
-            "Risk Score": f"{grade} ({sc})",
+            "Ticker"        : d["symbol"],
+            "Name"          : (d.get("name") or d["symbol"])[:28],
+            "Price"         : f'{cur}{d["price"]:,.2f}' if d.get("price") else "—",
+            "Mkt Cap"       : fmt_big(d.get("mkt_cap"), cur),
+            "P/E"           : f'{d["pe"]:.1f}×'       if d.get("pe")       else "—",
+            "P/B"           : f'{d["pb"]:.1f}×'       if d.get("pb")       else "—",
+            "Div Yield"     : fmt_pct(d.get("div_yield")),
+            "Profit Mg."    : fmt_pct(d.get("profit_margin")),
+            "ROE"           : fmt_pct(d.get("roe")),
+            "EV/EBITDA"     : f'{d["ev_ebitda"]:.1f}×' if d.get("ev_ebitda") else "—",
+            "Beta"          : fmt_num(d.get("beta")),
+            "D/E"           : fmt_num(d.get("debt_eq")),   # already normalised in fetch
+            "Volatility"    : fmt_pct(d.get("vol")),
+            "MDD"           : fmt_pct(d.get("mdd")),
+            "Ulcer"         : fmt_num(d.get("ulcer_index")),
+            "Avg Rec (d)"   : f"{avg_rec:.0f}" if avg_rec else "—",
+            "Rec Success"   : fmt_pct(d.get("recovery_success_ratio")),
+            "Risk Score"    : f"{grade} ({sc})",
         })
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
+    # Export
     csv_buf = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
     st.download_button(
-        "⬇ Export Comparison CSV",
+        "⬇  Export Comparison CSV",
         data=csv_buf,
         file_name="stock_haus_comparison.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 
 # ═══════════════════════════════════════════════════════════════
@@ -2013,16 +2295,24 @@ def render_comparison(symbols: list[str], years: int):
 
 def render_sidebar() -> tuple[list[str], int, str]:
     with st.sidebar:
+        # Logo
         st.markdown(f"""
         <div style="padding: 16px 0 24px;">
-          <div style="font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:600;color:{INK};letter-spacing:.12em;">STOCK · HAUS</div>
-          <div style="font-size:8px;color:{INK_LIGHT};letter-spacing:.28em;text-transform:uppercase;margin-top:2px;">Intelligence &amp; Analytics · Live</div>
-          <div style="height:1px;background:linear-gradient(90deg,{GOLD},{GOLD_PALE},transparent);margin-top:12px;"></div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:22px;
+               font-weight:600;color:{INK};letter-spacing:.12em;">STOCK · HAUS</div>
+          <div style="font-family:Outfit,sans-serif;font-size:8px;color:{INK_LIGHT};
+               letter-spacing:.28em;text-transform:uppercase;margin-top:2px;">
+            Intelligence &amp; Analytics · Live</div>
+          <div style="height:1px;background:linear-gradient(90deg,{GOLD},{GOLD_PALE},transparent);
+               margin-top:12px;"></div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(f'<div class="section-header">Search Ticker</div>', unsafe_allow_html=True)
-        query = st.text_input("", placeholder="AAPL, BMW.DE, 7203.T…", label_visibility="collapsed", key="search_q")
+        # Ticker search
+        st.markdown(f'<div class="section-header">Search Ticker</div>',
+                    unsafe_allow_html=True)
+        query = st.text_input("", placeholder="AAPL, BMW.DE, 7203.T…",
+                              label_visibility="collapsed", key="search_q")
 
         if query and len(query) >= 1:
             with st.spinner("Searching…"):
@@ -2036,8 +2326,12 @@ def render_sidebar() -> tuple[list[str], int, str]:
                         st.session_state.active = r["sym"]
                         st.rerun()
 
-        st.markdown(f'<div class="section-header" style="margin-top:20px;">Watchlist</div>', unsafe_allow_html=True)
-        bulk = st.text_area("Add tickers (comma/space separated)", placeholder="MSFT, TSLA, LVMH.PA…", height=80)
+        # Bulk add
+        st.markdown(f'<div class="section-header" style="margin-top:20px;">Watchlist</div>',
+                    unsafe_allow_html=True)
+        bulk = st.text_area("Add tickers (comma/space separated)",
+                            placeholder="MSFT, TSLA, LVMH.PA…",
+                            height=80, label_visibility="visible")
         if st.button("＋ Add to Watchlist", use_container_width=True):
             news = [t.strip().upper() for t in bulk.replace(",", " ").split() if t.strip()]
             current = st.session_state.get("tickers", ["AAPL"])
@@ -2046,18 +2340,21 @@ def render_sidebar() -> tuple[list[str], int, str]:
                 st.session_state.active = news[0]
             st.rerun()
 
+        # Current watchlist
         tickers = st.session_state.get("tickers", ["AAPL"])
         if tickers:
             st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
             to_remove = None
             for sym in tickers:
-                c1, c2 = st.columns([3, 1])
-                with c1:
+                col_sym, col_rm = st.columns([3, 1])
+                with col_sym:
+                    active = st.session_state.get("active", tickers[0])
+                    style = f"color:{GOLD};font-weight:600;" if sym == active else f"color:{INK_MID};"
                     if st.button(sym, key=f"sel_{sym}", use_container_width=True):
                         st.session_state.active = sym
                         st.session_state.view_mode = "detail"
                         st.rerun()
-                with c2:
+                with col_rm:
                     if st.button("✕", key=f"rm_{sym}"):
                         to_remove = sym
             if to_remove:
@@ -2066,25 +2363,28 @@ def render_sidebar() -> tuple[list[str], int, str]:
                     st.session_state.active = st.session_state.tickers[0]
                 st.rerun()
 
+        # Compare toggle
         st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
         if len(tickers) >= 2:
-            if st.button("⇄ Compare All", use_container_width=True):
+            if st.button("⇄  Compare All", use_container_width=True):
                 st.session_state.view_mode = "compare"
                 st.rerun()
 
-        st.markdown(f'<div class="section-header" style="margin-top:24px;">Time Window</div>', unsafe_allow_html=True)
-        yr = st.select_slider(
-            "",
-            options=[1, 2, 3, 5, 10],
-            value=st.session_state.get("years", 3),
-            format_func=lambda x: f"{x}Y",
-            label_visibility="collapsed"
-        )
+        # Year selector
+        st.markdown(f'<div class="section-header" style="margin-top:24px;">Time Window</div>',
+                    unsafe_allow_html=True)
+        yr = st.select_slider("", options=[1, 2, 3, 5, 10],
+                              value=st.session_state.get("years", 3),
+                              format_func=lambda x: f"{x}Y",
+                              label_visibility="collapsed")
         st.session_state.years = yr
 
+        # Data note
         st.markdown(f"""
-        <div style="margin-top:32px;padding:12px 16px;background:{STONE};border-radius:8px;border:1px solid #DDD8CE;">
-          <div style="font-size:9px;color:{INK_LIGHT};letter-spacing:.1em;text-transform:uppercase;line-height:1.8;">
+        <div style="margin-top:32px;padding:12px 16px;background:{STONE};
+             border-radius:8px;border:1px solid #DDD8CE;">
+          <div style="font-size:9px;color:{INK_LIGHT};font-family:Outfit,sans-serif;
+               letter-spacing:.1em;text-transform:uppercase;line-height:1.8;">
             Data: Yahoo Finance<br>Cache: 5 min (server-side)<br>
             Transport: yfinance (server-to-server)<br>
             No CORS proxy required
@@ -2103,25 +2403,28 @@ def render_sidebar() -> tuple[list[str], int, str]:
 # ═══════════════════════════════════════════════════════════════
 
 def main():
-    if "tickers" not in st.session_state:
-        st.session_state.tickers = ["AAPL"]
-    if "active" not in st.session_state:
-        st.session_state.active = "AAPL"
-    if "view_mode" not in st.session_state:
-        st.session_state.view_mode = "detail"
-    if "years" not in st.session_state:
-        st.session_state.years = 3
+    # Init session state
+    if "tickers"   not in st.session_state: st.session_state.tickers   = ["AAPL"]
+    if "active"    not in st.session_state: st.session_state.active    = "AAPL"
+    if "view_mode" not in st.session_state: st.session_state.view_mode = "detail"
+    if "years"     not in st.session_state: st.session_state.years     = 3
 
     tickers, years, mode = render_sidebar()
 
+    # Ensure active is in tickers
     if st.session_state.active not in tickers and tickers:
         st.session_state.active = tickers[0]
+
+    active = st.session_state.active
 
     if not tickers:
         st.markdown(f"""
         <div style="text-align:center;padding:100px 20px;">
-          <div style="font-size:28px;color:{INK_MID};font-weight:400;margin-bottom:10px;">Begin your analysis</div>
-          <div style="font-size:13px;color:{INK_LIGHT};">Search any ticker in the sidebar — US, EU, Asia, all exchanges.</div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:28px;
+               color:{INK_MID};font-weight:400;margin-bottom:10px;">
+            Begin your analysis</div>
+          <div style="font-size:13px;font-family:Outfit,sans-serif;color:{INK_LIGHT};">
+            Search any ticker in the sidebar — US, EU, Asia, all exchanges.</div>
         </div>
         """, unsafe_allow_html=True)
         return
@@ -2129,12 +2432,16 @@ def main():
     if mode == "compare" and len(tickers) >= 2:
         render_comparison(tickers, years)
     else:
-        render_ticker_detail(st.session_state.active, years)
+        render_ticker_detail(active, years)
 
+    # Footer
     st.markdown(f"""
-    <div style="margin-top:60px;border-top:1px solid #DDD8CE;padding:20px 0;display:flex;justify-content:space-between;">
-      <span style="font-size:10px;color:#C5BFB5;letter-spacing:.14em;">STOCK · HAUS</span>
-      <span style="font-size:9px;color:#DDD8CE;">Live data via Yahoo Finance · 5 min cache · No CORS proxies</span>
+    <div style="margin-top:60px;border-top:1px solid #DDD8CE;padding:20px 0;
+         display:flex;justify-content:space-between;">
+      <span style="font-size:10px;font-family:Outfit,sans-serif;color:#C5BFB5;
+            letter-spacing:.14em;">STOCK · HAUS</span>
+      <span style="font-size:9px;font-family:Outfit,sans-serif;color:#DDD8CE;">
+        Live data via Yahoo Finance · 5 min cache · No CORS proxies</span>
     </div>
     """, unsafe_allow_html=True)
 
