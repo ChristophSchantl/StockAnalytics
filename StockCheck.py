@@ -326,11 +326,20 @@ def _empty_risk_dict() -> dict:
         "recovery_efficiency": None,
     }
 
-def extract_recovery_cycles_from_closes(closes: np.ndarray, dates: pd.Index) -> pd.DataFrame:
-    if closes is None or len(closes) < 3:
+def extract_recovery_cycles_from_closes(closes: np.ndarray, dates) -> pd.DataFrame:
+    """
+    Extract drawdown / recovery cycles from close prices.
+    Robust against pandas Series / DatetimeIndex / numpy arrays.
+    """
+    if closes is None or len(closes) < 3 or dates is None or len(dates) != len(closes):
         return pd.DataFrame()
 
     closes = np.asarray(closes, dtype=float)
+
+    # IMPORTANT FIX:
+    # force dates into positional datetime array, so [-1] works safely
+    dates = pd.to_datetime(pd.Index(dates))
+
     peaks = np.maximum.accumulate(closes)
     drawdowns = (closes - peaks) / peaks
     underwater = drawdowns < 0
@@ -352,6 +361,7 @@ def extract_recovery_cycles_from_closes(closes: np.ndarray, dates: pd.Index) -> 
         segments.append((start, len(closes) - 1, None))
 
     cycles = []
+
     for seg_start, seg_end, recovery_idx in segments:
         peak_idx = max(seg_start - 1, 0)
         peak_price = closes[peak_idx]
@@ -363,6 +373,7 @@ def extract_recovery_cycles_from_closes(closes: np.ndarray, dates: pd.Index) -> 
         rel_trough_idx = int(np.argmin(segment_prices))
         trough_idx = seg_start + rel_trough_idx
         trough_price = closes[trough_idx]
+
         dd_depth = (trough_price - peak_price) / peak_price if peak_price > 0 else np.nan
 
         peak_date = pd.Timestamp(dates[peak_idx])
@@ -1039,11 +1050,10 @@ def _prices_to_df(prices: list[dict], years: int = 10) -> pd.DataFrame:
     df = df[df["date"] >= cutoff].sort_values("date").reset_index(drop=True)
     return df
 
-def extract_recovery_cycles(prices: list[dict], years: int = 10) -> pd.DataFrame:
-    df = _prices_to_df(prices, years)
-    if df.empty:
-        return pd.DataFrame()
-    return extract_recovery_cycles_from_closes(df["price"].astype(float).values, df["date"])
+return extract_recovery_cycles_from_closes(
+    df["price"].astype(float).values,
+    df["date"].values
+)
 
 def price_vs_running_peak_chart(prices: list[dict], years: int = 10) -> go.Figure:
     df = _prices_to_df(prices, years)
