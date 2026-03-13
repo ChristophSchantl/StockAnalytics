@@ -285,12 +285,16 @@ def _sig(tone):
 def _render_table(rows: list[dict]):
     df = pd.DataFrame(rows)
     df = df[df["Value"] != "—"]
+
+    if "Signal" in df.columns and "Metric" in df.columns:
+        df["Metric"] = df["Signal"].fillna("") + "  " + df["Metric"].fillna("")
+        df = df.drop(columns=["Signal"])
+
     st.dataframe(
         df,
         hide_index=True,
         use_container_width=True,
         column_config={
-            "Signal": st.column_config.TextColumn("", width="small"),
             "Metric": st.column_config.TextColumn("Metric", width="medium"),
             "Value": st.column_config.TextColumn("Value", width="small"),
             "Comment": st.column_config.TextColumn("Assessment"),
