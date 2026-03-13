@@ -197,22 +197,7 @@ st.markdown(f"""
     line-height: 1;
   }}
 
-  /* ── Sidebar collapse/expand button: render as icon not text ── */
-  [data-testid="collapsedControl"] span,
-  button[kind="header"] span,
-  [data-testid="baseButton-header"] span {{
-    font-family: 'Material Icons' !important;
-    font-size: 22px !important;
-    font-weight: normal !important;
-    font-style: normal !important;
-    letter-spacing: normal !important;
-    text-transform: none !important;
-    display: inline-block;
-    white-space: nowrap;
-    word-wrap: normal;
-    color: {GOLD};
-  }}
-  /* Streamlit ≥1.35 uses a different selector */
+  /* ── Sidebar toggle button ── */
   [data-testid="collapsedControl"] {{
     background: {STONE} !important;
     border-radius: 0 8px 8px 0 !important;
@@ -222,7 +207,42 @@ st.markdown(f"""
   [data-testid="collapsedControl"]:hover {{
     background: {GOLD_PALE} !important;
   }}
+  /* Hide the raw ligature text, show nothing — JS injects SVG below */
+  [data-testid="collapsedControl"] span {{
+    font-size: 0 !important;
+    visibility: hidden;
+  }}
+  /* The injected SVG arrow sits as ::before pseudo via data-attr */
+  [data-testid="collapsedControl"]::after {{
+    content: "◀◀";
+    font-size: 13px;
+    color: {GOLD};
+    font-family: system-ui, sans-serif;
+    letter-spacing: -3px;
+    padding-left: 4px;
+  }}
 </style>
+""", unsafe_allow_html=True)
+
+# JS: also watch for sidebar open/closed state and flip the arrow
+st.markdown("""
+<script>
+(function() {{
+  function fixToggle() {{
+    const btn = document.querySelector('[data-testid="collapsedControl"]');
+    if (!btn) return;
+    // If sidebar is expanded the button is on the left edge pointing left (close)
+    // If collapsed it points right (open) — toggle arrow direction
+    const observer = new MutationObserver(() => {{
+      const expanded = document.querySelector('[data-testid="stSidebar"]');
+      btn.setAttribute('data-open', expanded ? '1' : '0');
+    }});
+    observer.observe(document.body, {{ childList: true, subtree: true }});
+  }}
+  if (document.readyState === 'complete') fixToggle();
+  else window.addEventListener('load', fixToggle);
+}})();
+</script>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
@@ -2095,54 +2115,6 @@ def render_ticker_detail(symbol: str, years: int):
                             else "warn" if dv and dv > 0.18
                             else "good" if dv is not None and dv < 0.12 else None),
              "Comment": "Negative-return volatility only"},
-            # ── Recovery-Path Risk ───────────────────────────────────────
-            {"Metric": "Ulcer Index",
-             "Value" : fmt_num(ulcer),
-             "Signal": _sig("bad"  if ulcer and ulcer > 20
-                            else "warn" if ulcer and ulcer > 10
-                            else "good" if ulcer is not None and ulcer < 5 else None),
-             "Comment": ("Severe drawdown stress" if ulcer and ulcer > 20
-                         else "Moderate drawdown stress" if ulcer and ulcer > 10
-                         else "Low drawdown stress" if ulcer is not None and ulcer < 5 else "")},
-            {"Metric": "Time Under Water",
-             "Value" : fmt_pct(tuw),
-             "Signal": _sig("bad"  if tuw and tuw > 0.60
-                            else "warn" if tuw and tuw > 0.40
-                            else "good" if tuw is not None and tuw < 0.25 else None),
-             "Comment": ("Mostly underwater — persistent losses" if tuw and tuw > 0.60
-                         else "Frequently below prior highs" if tuw and tuw > 0.40
-                         else "Rarely underwater" if tuw is not None and tuw < 0.25 else "")},
-            {"Metric": "Avg Recovery Days",
-             "Value" : (f"{avg_rec:.0f}d  ({avg_rec/30:.1f}mo)" if avg_rec else "—"),
-             "Signal": _sig("bad"  if avg_rec and avg_rec > 180
-                            else "warn" if avg_rec and avg_rec > 60
-                            else "good" if avg_rec is not None and avg_rec < 30 else None),
-             "Comment": "Avg trough → prior peak"},
-            {"Metric": "Median Recovery Days",
-             "Value" : (f"{median_rec:.0f}d" if median_rec else "—"),
-             "Signal": _sig("bad"  if median_rec and median_rec > 180
-                            else "warn" if median_rec and median_rec > 60
-                            else "good" if median_rec is not None and median_rec < 30 else None),
-             "Comment": "Typical healing time"},
-            {"Metric": "Max Recovery Days",
-             "Value" : (f"{max_rec:.0f}d  ({max_rec/30:.1f}mo)" if max_rec else "—"),
-             "Signal": _sig("bad"  if max_rec and max_rec > 365
-                            else "warn" if max_rec and max_rec > 120
-                            else "good" if max_rec is not None and max_rec < 45 else None),
-             "Comment": "Worst observed healing cycle"},
-            {"Metric": "Recovery Success Rate",
-             "Value" : fmt_pct(rec_suc),
-             "Signal": _sig("good" if rec_suc and rec_suc > 0.75
-                            else "warn" if rec_suc and rec_suc > 0.50
-                            else "bad" if rec_suc is not None else None),
-             "Comment": ("Most drawdowns fully healed" if rec_suc and rec_suc > 0.75
-                         else "Many drawdowns unresolved" if rec_suc and rec_suc < 0.50 else "")},
-            {"Metric": "Recovery Efficiency",
-             "Value" : (f"{rec_eff*100:.3f}%/day" if rec_eff else "—"),
-             "Signal": _sig("good" if rec_eff and rec_eff > 0.003
-                            else "warn" if rec_eff and rec_eff > 0.001
-                            else "bad" if rec_eff is not None else None),
-             "Comment": "Drawdown depth recovered per day"},
             # ── Balance Sheet Risk ───────────────────────────────────────
             {"Metric": "Debt / Equity",
              "Value" : fmt_num(deq),
